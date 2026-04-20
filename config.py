@@ -30,35 +30,35 @@ class OpenTeamsConfig:
     api_key: str = field(default_factory=lambda: os.environ.get("ANTHROPIC_API_KEY", ""))
     base_url: str | None = field(default_factory=lambda: os.environ.get("ANTHROPIC_BASE_URL"))
 
-    max_tokens: int = 16384
-    max_turns: int = 200
-    max_agent_turns: int = 50
+    max_tokens: int = 50000
+    max_turns: int = 1000
+    max_agent_turns: int = 200
     temperature: float = 0.0
 
     team_name: str = "default"
 
     def __post_init__(self):
-        self.project_root = Path(self.project_root)
-        self.workspace_dir = Path(self.workspace_dir)
+        self.project_root = Path(self.project_root).resolve()
+        self.workspace_dir = Path(self.workspace_dir).resolve()
         if self.session_dir is not None:
-            self.session_dir = Path(self.session_dir)
+            self.session_dir = Path(self.session_dir).resolve()
         base_dir = self.session_dir if self.session_dir else self.workspace_dir
         if self.teams_dir is None:
             self.teams_dir = base_dir / "teams"
         else:
-            self.teams_dir = Path(self.teams_dir)
+            self.teams_dir = Path(self.teams_dir).resolve()
         if self.tasks_dir is None:
             self.tasks_dir = base_dir / "tasks"
         else:
-            self.tasks_dir = Path(self.tasks_dir)
+            self.tasks_dir = Path(self.tasks_dir).resolve()
         if self.logs_dir is None:
             self.logs_dir = base_dir / "logs"
         else:
-            self.logs_dir = Path(self.logs_dir)
+            self.logs_dir = Path(self.logs_dir).resolve()
         if self.inboxes_dir is None:
             self.inboxes_dir = base_dir / "inboxes"
         else:
-            self.inboxes_dir = Path(self.inboxes_dir)
+            self.inboxes_dir = Path(self.inboxes_dir).resolve()
 
     def ensure_dirs(self):
         dirs = [self.workspace_dir]
@@ -209,8 +209,9 @@ def load_and_init_config(
         if clean:
             config = config.merge(clean)
 
-    # 4. Ensure workspace_dir is relative to project_root if default
-    if str(config.workspace_dir) == str(Path.cwd() / ".open_teams"):
+    # 4. Ensure workspace_dir is under project_root (not under CWD if they differ)
+    default_ws = Path.cwd().resolve() / ".open_teams"
+    if config.workspace_dir == default_ws and config.project_root != Path.cwd().resolve():
         config.workspace_dir = config.project_root / ".open_teams"
 
     # 5. Generate session directory: <project_name>_<timestamp>

@@ -3,13 +3,21 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 from .base import Tool
 
 
+def _resolve_path(file_path: str, project_root: Optional[Path]) -> Path:
+    """Resolve *file_path* relative to *project_root* when it is a relative path."""
+    p = Path(file_path)
+    if p.is_absolute() or project_root is None:
+        return p
+    return (project_root / p).resolve()
+
+
 class ReadFileTool(Tool):
-    def __init__(self):
+    def __init__(self, project_root: Optional[Path] = None):
         self.name = "read_file"
         self.description = (
             "Read the contents of a file from disk. "
@@ -34,18 +42,18 @@ class ReadFileTool(Tool):
             },
             "required": ["file_path"],
         }
+        self._project_root = Path(project_root) if project_root is not None else None
 
     def execute(self, params: dict[str, Any]) -> str:
         file_path = params["file_path"]
         offset = int(params.get("offset") or 1)
         limit = int(params.get("limit") or 200)
 
-        # Normalize offset to be at least 1
         if offset < 1:
             offset = 1
 
         try:
-            path = Path(file_path)
+            path = _resolve_path(file_path, self._project_root)
             with open(path, "r", encoding="utf-8", errors="replace") as fh:
                 all_lines = fh.readlines()
         except FileNotFoundError:
@@ -76,7 +84,7 @@ class ReadFileTool(Tool):
 
 
 class WriteFileTool(Tool):
-    def __init__(self):
+    def __init__(self, project_root: Optional[Path] = None):
         self.name = "write_file"
         self.description = (
             "Write content to a file on disk. "
@@ -97,13 +105,14 @@ class WriteFileTool(Tool):
             },
             "required": ["file_path", "content"],
         }
+        self._project_root = Path(project_root) if project_root is not None else None
 
     def execute(self, params: dict[str, Any]) -> str:
         file_path = params["file_path"]
         content = params["content"]
 
         try:
-            path = Path(file_path)
+            path = _resolve_path(file_path, self._project_root)
             path.parent.mkdir(parents=True, exist_ok=True)
             with open(path, "w", encoding="utf-8") as fh:
                 fh.write(content)
@@ -113,7 +122,7 @@ class WriteFileTool(Tool):
 
 
 class EditFileTool(Tool):
-    def __init__(self):
+    def __init__(self, project_root: Optional[Path] = None):
         self.name = "edit_file"
         self.description = (
             "Edit a file by replacing a specific string with a new string. "
@@ -138,6 +147,7 @@ class EditFileTool(Tool):
             },
             "required": ["file_path", "old_string", "new_string"],
         }
+        self._project_root = Path(project_root) if project_root is not None else None
 
     def execute(self, params: dict[str, Any]) -> str:
         file_path = params["file_path"]
@@ -145,7 +155,7 @@ class EditFileTool(Tool):
         new_string = params["new_string"]
 
         try:
-            path = Path(file_path)
+            path = _resolve_path(file_path, self._project_root)
             with open(path, "r", encoding="utf-8", errors="replace") as fh:
                 content = fh.read()
         except FileNotFoundError:

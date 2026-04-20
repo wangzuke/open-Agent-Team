@@ -115,8 +115,6 @@ class TeamLeader:
     def handle_user_message(self, message: str) -> str:
         """Process a user message through the leader's query loop."""
         self.logger.log_message("user", message)
-        self._check_inbox_and_inject()
-
         result = self.engine.run_loop(initial_message=message)
         self.logger.log_message("assistant", result)
         return result
@@ -124,24 +122,10 @@ class TeamLeader:
     def handle_followup(self, message: str) -> str:
         """Handle follow-up messages in the ongoing conversation."""
         self.logger.log_message("user", message)
-        self._check_inbox_and_inject()
-
         self.context.add_user_message(message)
         result = self.engine.run_loop()
         self.logger.log_message("assistant", result)
         return result
-
-    def _check_inbox_and_inject(self):
-        """Check leader's inbox and inject any messages as system context."""
-        messages = self.mailbox.read_inbox(self.agent_name, unread_only=True)
-        if messages:
-            self.mailbox.mark_as_read(self.agent_name)
-            inbox_text = "\n".join(
-                f"[From {m['from_agent']}]: {m['content']}" for m in messages
-            )
-            self.context.add_user_message(
-                f"[INBOX MESSAGES - Messages from your teammates]\n{inbox_text}"
-            )
 
     def get_team_status(self) -> dict[str, Any]:
         """Get current team status."""
@@ -162,22 +146,87 @@ class TeamLeader:
         }
 
     def wait_for_completion(self, timeout: float = 600, poll_interval: float = 5):
-        """Wait for all teammate agents to complete, periodically checking inbox."""
+        """Wait for all teammate agents to complete, with health monitoring."""
         start = time.monotonic()
+        seen_exited: set[str] = set()
+
         while time.monotonic() - start < timeout:
             if self.agent_manager.active_count == 0:
                 break
 
+            # Read inbox messages (log them for visibility)
             messages = self.mailbox.read_inbox(self.agent_name, unread_only=True)
             if messages:
                 self.mailbox.mark_as_read(self.agent_name)
                 for msg in messages:
                     self.logger.log_event("inbox_message", {
                         "from": msg["from_agent"],
+                        "summary": msg.get("summary", ""),
                         "content": msg["content"][:500],
                     })
 
+            # Check for dead processes with orphaned tasks
+            process_status = self.agent_manager.get_status()
+            for name, status in process_status.items():
+                if "exited" in status and name not in seen_exited:
+                    seen_exited.add(name)
+                    self._recover_orphaned_tasks(name, status)
+
             time.sleep(poll_interval)
+
+        # Final sweep after loop exits
+        process_status = self.agent_manager.get_status()
+        for name, status in process_status.items():
+            if "exited" in status and name not in seen_exited:
+                seen_exited.add(name)
+                self._recover_orphaned_tasks(name, status)
+
+    def _recover_orphaned_tasks(self, agent_name: str, exit_status: str):
+        """Auto-mark in_progress tasks of a dead agent as blocked."""
+        try:
+            stuck = self.task_board.list_tasks(
+                filter_status="in_progress", filter_owner=agent_name
+            )
+            if not stuck:
+                return
+
+            is_crash = "exited (0)" not in exit_status
+            recovered_ids = []
+
+            for task in stuck:
+                try:
+                    note = (
+                        f"\n\n[AUTO-RECOVERY] Agent '{agent_name}' exited "
+                        f"({'CRASH' if is_crash else 'normally'}, {exit_status}) "
+                        f"while this task was in_progress. Marked blocked for reassignment."
+                    )
+                    self.task_board.update_task(
+                        task["id"],
+                        status="blocked",
+                        description=task.get("description", "") + note,
+                    )
+                    recovered_ids.append(task["id"])
+                    self.logger.log_event("task_auto_recovered", {
+                        "task_id": task["id"],
+                        "agent": agent_name,
+                        "exit_status": exit_status,
+                    })
+                except Exception as exc:
+                    self.logger.log_error(
+                        f"Failed to recover task {task['id']}: {exc}",
+                        {"agent": agent_name},
+                    )
+
+            if recovered_ids:
+                self.context.add_user_message(
+                    f"[PROCESS HEALTH ALERT] Agent '{agent_name}' exited ({exit_status}).\n"
+                    f"Tasks auto-marked as blocked: {', '.join('Task ' + tid for tid in recovered_ids)}\n"
+                    "Please review and reassign these tasks."
+                )
+        except Exception as exc:
+            self.logger.log_error(
+                f"Error in _recover_orphaned_tasks for '{agent_name}': {exc}", {}
+            )
 
     def shutdown(self):
         """Gracefully shut down the team."""

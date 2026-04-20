@@ -8,7 +8,7 @@ from .file_tools import ReadFileTool, WriteFileTool, EditFileTool
 from .search_tools import GlobTool, GrepTool
 from .shell_tool import ShellTool
 from .agent_tool import SpawnAgentTool
-from .message_tool import SendMessageTool
+from .message_tool import SendMessageTool, CheckInboxTool
 from .task_tools import TaskCreateTool, TaskUpdateTool, TaskListTool, TaskGetTool
 from .team_tool import TeamCreateTool
 
@@ -20,14 +20,15 @@ def create_leader_tools(
 ) -> ToolRegistry:
     """Build a ToolRegistry with the full leader tool set.
 
-    Includes: file I/O, search, shell, spawn_agent, send_message,
+    Includes: file I/O, search, shell, spawn_agent, send_message, check_inbox,
     all task tools, and team_create.
     """
     registry = ToolRegistry()
 
-    # File tools
+    # File tools — resolve relative paths against project_root
+    project_root = config.project_root
     for tool_cls in [ReadFileTool, WriteFileTool, EditFileTool]:
-        registry.register(tool_cls())
+        registry.register(tool_cls(project_root=project_root))
 
     # Search tools
     for tool_cls in [GlobTool, GrepTool]:
@@ -41,10 +42,14 @@ def create_leader_tools(
     # Agent spawning
     registry.register(SpawnAgentTool())
 
-    # Messaging
+    # Messaging — send + check inbox
     msg = SendMessageTool()
     msg.set_context(team_name, agent_name, config)
     registry.register(msg)
+
+    inbox = CheckInboxTool()
+    inbox.set_context(team_name, agent_name, config)
+    registry.register(inbox)
 
     # Task management
     for tool_cls in [TaskCreateTool, TaskUpdateTool, TaskListTool, TaskGetTool]:
@@ -67,14 +72,15 @@ def create_teammate_tools(
 ) -> ToolRegistry:
     """Build a ToolRegistry with the standard teammate tool set.
 
-    Includes: file I/O, search, shell, send_message, and all task tools.
+    Includes: file I/O, search, shell, send_message, check_inbox, and all task tools.
     Does NOT include spawn_agent or team_create (leader-only capabilities).
     """
     registry = ToolRegistry()
 
-    # File tools
+    # File tools — resolve relative paths against project_root
+    project_root = config.project_root
     for tool_cls in [ReadFileTool, WriteFileTool, EditFileTool]:
-        registry.register(tool_cls())
+        registry.register(tool_cls(project_root=project_root))
 
     # Search tools
     for tool_cls in [GlobTool, GrepTool]:
@@ -85,10 +91,14 @@ def create_teammate_tools(
     shell.set_working_dir(str(config.project_root))
     registry.register(shell)
 
-    # Messaging
+    # Messaging — send + check inbox
     msg = SendMessageTool()
     msg.set_context(team_name, agent_name, config)
     registry.register(msg)
+
+    inbox = CheckInboxTool()
+    inbox.set_context(team_name, agent_name, config)
+    registry.register(inbox)
 
     # Task management
     for tool_cls in [TaskCreateTool, TaskUpdateTool, TaskListTool, TaskGetTool]:

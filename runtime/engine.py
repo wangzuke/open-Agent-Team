@@ -12,6 +12,8 @@ from .models import QueryResult, ToolCall
 
 _DEFAULT_LOGGER = logging.getLogger(__name__)
 
+_WARN_TURNS_REMAINING = 3
+
 
 class QueryEngine:
     """Drives the LLM API call loop for a single :class:`RuntimeContext`.
@@ -47,6 +49,8 @@ class QueryEngine:
         self.activity_logger = activity_logger or (
             logger if not isinstance(logger, logging.Logger) else None
         )
+        self._last_inbox_check: float = 0.0
+        self._inbox_check_interval: float = 10.0
 
         if llm_client is not None:
             self.client = llm_client
@@ -154,6 +158,60 @@ class QueryEngine:
         return results
 
     # ------------------------------------------------------------------
+    # Automatic inbox injection
+    # ------------------------------------------------------------------
+
+    def _check_and_inject_inbox(self) -> str | None:
+        """Check the agent's inbox and return formatted unread messages.
+
+        Returns *None* when there are no new messages or when the throttle
+        interval has not elapsed since the last check.  Failures are
+        silently swallowed so they never break the main loop.
+        """
+        now = time.monotonic()
+        if now - self._last_inbox_check < self._inbox_check_interval:
+            return None
+        self._last_inbox_check = now
+
+        ctx = self.context
+        team_name = ctx.agent_identity.team_name
+        agent_name = ctx.agent_identity.agent_name
+        if not team_name:
+            return None
+
+        try:
+            from open_teams.coordination.mailbox import Mailbox
+
+            mailbox = Mailbox(ctx.config, team_name)
+            messages = mailbox.read_inbox(agent_name, unread_only=True)
+            if not messages:
+                return None
+
+            msg_ids = [m["id"] for m in messages]
+            mailbox.mark_as_read(agent_name, msg_ids)
+
+            lines = [f"[INBOX] You have {len(messages)} new message(s):"]
+            for m in messages:
+                sender = m.get("from_agent", "unknown")
+                summary = m.get("summary", "")
+                content = m.get("content", "")
+                header = f"[From {sender}]"
+                if summary:
+                    header += f" ({summary})"
+                lines.append(f"\n{header}\n{content}")
+
+            if self.activity_logger:
+                self.activity_logger.log_event(
+                    "inbox_injected",
+                    {"count": len(messages), "from": [m.get("from_agent") for m in messages]},
+                )
+
+            return "\n".join(lines)
+        except Exception as exc:
+            self.logger.debug("_check_and_inject_inbox failed: %s", exc)
+            return None
+
+    # ------------------------------------------------------------------
     # Main agentic loop
     # ------------------------------------------------------------------
 
@@ -174,11 +232,32 @@ class QueryEngine:
             ctx.add_user_message(initial_message)
 
         last_text: str = ""
+        warning_injected: bool = False
 
         for turn_index in range(max_turns):
             if ctx.abort_event.is_set():
                 self.logger.info("Abort event set — stopping run_loop.")
                 break
+
+            turns_remaining = max_turns - turn_index
+            if turns_remaining <= _WARN_TURNS_REMAINING and not warning_injected:
+                warning_injected = True
+                warn_msg = (
+                    f"[SYSTEM WARNING] You have only {turns_remaining} turn(s) remaining "
+                    f"before this agent session ends automatically.\n"
+                    "IMMEDIATE ACTIONS REQUIRED:\n"
+                    "1. Call task_update(status=\"completed\") for any finished tasks NOW.\n"
+                    "2. Call check_inbox to read any pending messages.\n"
+                    "3. Call send_message to team-lead with a final status summary.\n"
+                    "4. If a task cannot be finished, call task_update(status=\"blocked\")."
+                )
+                ctx.add_user_message(warn_msg)
+                self.logger.warning(
+                    "Agent '%s' — injecting turn-limit warning at turn %d/%d.",
+                    ctx.agent_identity.agent_name,
+                    turn_index + 1,
+                    max_turns,
+                )
 
             self.logger.info(
                 "Agent '%s' — turn %d/%d",
@@ -186,6 +265,10 @@ class QueryEngine:
                 turn_index + 1,
                 max_turns,
             )
+
+            inbox_text = self._check_and_inject_inbox()
+            if inbox_text:
+                ctx.add_user_message(inbox_text)
 
             result = self.run_turn()
             last_text = result.text_output
@@ -223,4 +306,101 @@ class QueryEngine:
             ctx.agent_identity.agent_name,
             max_turns,
         )
+        self._handle_max_turns_exceeded()
         return last_text
+
+    def _handle_max_turns_exceeded(self) -> None:
+        """Auto-complete or block orphaned tasks and notify team-lead."""
+        ctx = self.context
+        agent_name = ctx.agent_identity.agent_name
+        team_name = ctx.agent_identity.team_name
+
+        if not team_name:
+            return
+
+        try:
+            from open_teams.coordination.task_board import TaskBoard
+            from open_teams.coordination.mailbox import Mailbox
+
+            board = TaskBoard(ctx.config, team_name)
+            stuck_tasks = board.list_tasks(
+                filter_status="in_progress", filter_owner=agent_name
+            )
+
+            completed_ids: list[str] = []
+            blocked_ids: list[str] = []
+
+            for task in stuck_tasks:
+                try:
+                    if self._task_output_exists(task):
+                        board.update_task(task["id"], status="completed")
+                        completed_ids.append(task["id"])
+                    else:
+                        board.update_task(
+                            task["id"],
+                            status="blocked",
+                            description=(
+                                task.get("description", "")
+                                + f"\n\n[AUTO-BLOCKED] Agent '{agent_name}' exhausted "
+                                f"max_turns without completing this task."
+                            ),
+                        )
+                        blocked_ids.append(task["id"])
+                except Exception as exc:
+                    self.logger.error(
+                        "Failed to update stuck task %s: %s", task["id"], exc
+                    )
+
+            parts: list[str] = [
+                f"Agent '{agent_name}' exhausted its turn limit and is shutting down."
+            ]
+            if completed_ids:
+                parts.append(
+                    "Tasks auto-completed (output files found):\n"
+                    + "\n".join(f"  - Task {tid}" for tid in completed_ids)
+                )
+            if blocked_ids:
+                parts.append(
+                    "Tasks auto-blocked (incomplete):\n"
+                    + "\n".join(f"  - Task {tid}" for tid in blocked_ids)
+                )
+            if not completed_ids and not blocked_ids:
+                parts.append("No in_progress tasks found.")
+
+            mailbox = Mailbox(ctx.config, team_name)
+            mailbox.send_message(
+                from_agent=agent_name,
+                to_agent="team-lead",
+                content="\n\n".join(parts),
+                summary=(
+                    f"{agent_name} done — "
+                    f"{len(completed_ids)} completed, {len(blocked_ids)} blocked"
+                ),
+            )
+
+        except Exception as exc:
+            self.logger.error(
+                "Error in _handle_max_turns_exceeded for '%s': %s",
+                agent_name, exc,
+            )
+
+    @staticmethod
+    def _task_output_exists(task: dict) -> bool:
+        """Heuristic: check if files mentioned in the task description exist."""
+        import re
+        from pathlib import Path
+
+        desc = task.get("description", "")
+        patterns = re.findall(
+            r'(?:^|\s)(\w[\w/\\.-]*\.(?:py|ts|js|json|yaml|yml|toml|txt|md|html|css))\b',
+            desc,
+        )
+        if not patterns:
+            return False
+
+        found = 0
+        for p in patterns:
+            if Path(p).exists():
+                found += 1
+
+        return found > 0 and found >= len(patterns) * 0.5

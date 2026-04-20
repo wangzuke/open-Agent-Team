@@ -81,23 +81,70 @@ def _run_worker_process(
         f"You have been spawned as teammate '{agent_name}' (type: {agent_type}) "
         f"in team '{team_name}'.\n\n"
         f"Your initial task description:\n{task_description}\n\n"
-        "Start by checking the task board with task_list to see your assigned tasks. "
-        "If no tasks are assigned to you yet, check for available tasks you can claim."
+        "Inbox messages are delivered to you AUTOMATICALLY — you do not need to call check_inbox.\n\n"
+        "Follow this workflow exactly:\n"
+        "1. Call task_list to find tasks assigned to you or available to claim.\n"
+        "2. Call task_update(status='in_progress') before starting work on a task.\n"
+        "3. Complete the work using your tools.\n"
+        "4. Call task_update(status='completed') IMMEDIATELY when done — this unblocks downstream tasks.\n"
+        "5. Call send_message to team-lead with a completion report.\n"
+        "6. Repeat from step 1 if more tasks exist."
     )
 
+    agent_crashed = False
+    crash_summary = ""
+    final_output = ""
+
     try:
-        result = engine.run_loop(initial_message=initial_msg)
-        logger.log_event("agent_completed", {"final_output": result[:2000]})
+        final_output = engine.run_loop(initial_message=initial_msg)
+        logger.log_event("agent_completed", {"final_output": final_output[:2000]})
     except Exception as e:
+        agent_crashed = True
+        crash_summary = f"{type(e).__name__}: {e}"
         logger.log_error(f"Agent crashed: {e}", {"traceback": traceback.format_exc()})
 
     mailbox = Mailbox(config, team_name)
     try:
+        if agent_crashed:
+            content = (
+                f"Agent '{agent_name}' has CRASHED and is shutting down.\n\n"
+                f"Error: {crash_summary}\n\n"
+                "Tasks owned by this agent may be stuck. "
+                "Please check the task board and reassign if necessary."
+            )
+            summary = f"{agent_name} CRASHED: {crash_summary[:80]}"
+        else:
+            from open_teams.coordination.task_board import TaskBoard
+            completed, in_prog = [], []
+            try:
+                board = TaskBoard(config, team_name)
+                my_tasks = board.list_tasks(filter_owner=agent_name)
+                completed = [t for t in my_tasks if t["status"] == "completed"]
+                in_prog = [t for t in my_tasks if t["status"] == "in_progress"]
+                blocked = [t for t in my_tasks if t["status"] == "blocked"]
+
+                task_lines = []
+                if completed:
+                    task_lines.append(f"  Completed: {', '.join('Task ' + t['id'] for t in completed)}")
+                if in_prog:
+                    task_lines.append(f"  Still in_progress: {', '.join('Task ' + t['id'] for t in in_prog)}")
+                if blocked:
+                    task_lines.append(f"  Blocked: {', '.join('Task ' + t['id'] for t in blocked)}")
+                task_section = "\n".join(task_lines) if task_lines else "  All tasks handled."
+            except Exception:
+                task_section = "  (Could not retrieve task status)"
+
+            content = (
+                f"Agent '{agent_name}' has finished and is shutting down.\n\n"
+                f"Task status:\n{task_section}"
+            )
+            summary = f"{agent_name} done — {len(completed)} completed, {len(in_prog)} in_progress"
+
         mailbox.send_message(
             from_agent=agent_name,
             to_agent="team-lead",
-            content=f"Agent '{agent_name}' has finished all work and is shutting down.",
-            summary=f"{agent_name} completed",
+            content=content,
+            summary=summary,
         )
     except Exception:
         pass

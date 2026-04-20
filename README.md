@@ -43,7 +43,7 @@
 | **Runtime** | `runtime/` | LLM query loop、Agent 上下文管理、消息模型 |
 | **Agents** | `agents/` | Agent 定义、多进程派生与生命周期、Leader 编排逻辑 |
 | **Coordination** | `coordination/` | 任务面板、邮箱通信、团队配置 |
-| **Tools** | `tools/` | 13 个工具：文件读写编辑、代码搜索、Shell、Agent 派生、通信、任务管理 |
+| **Tools** | `tools/` | 14 个工具：文件读写编辑、代码搜索、Shell、Agent 派生、通信（含邮箱收发）、任务管理 |
 | **Prompts** | `prompts/` | 分层提示词系统：基础 + 角色 + 环境 + 协作指令 |
 | **Logging** | `logging/` | 按 Agent 独立的 JSONL 活动日志 |
 
@@ -302,7 +302,7 @@ Coder-A ──邮箱──→ Team Leader ──邮箱──→ Coder-B
 
 ## 工具集
 
-### Leader 专属工具（13 个）
+### Leader 专属工具（14 个）
 
 | 工具 | 说明 |
 |------|------|
@@ -315,12 +315,13 @@ Coder-A ──邮箱──→ Team Leader ──邮箱──→ Coder-B
 | `spawn_agent` | **派生新的 Teammate Agent** |
 | `team_create` | **创建团队** |
 | `send_message` | 向其他 Agent 发送消息 |
+| `check_inbox` | 读取收件箱中的未读消息 |
 | `task_create` | 创建任务 |
 | `task_update` | 更新任务状态/分配 |
 | `task_list` | 列出所有任务 |
 | `task_get` | 获取任务详情 |
 
-### Teammate 工具（11 个）
+### Teammate 工具（12 个）
 
 与 Leader 相同，但**不包含** `spawn_agent` 和 `team_create`。
 
