@@ -410,14 +410,21 @@ Leader 拥有 `spawn_agent` 和 `team_create` 等管理工具，Teammate 只能�
 
 ## 运行时数据
 
-系统运行时在项目根目录下创建 `.open_teams/` 目录：
+系统运行时在项目根目录下创建 `.open_teams/` 目录。每次运行会自动生成一个以 `<项目名>_<时间戳>` 命名的会话目录，实现不同项目和不同运行之间的隔离：
 
 ```
 .open_teams/
-├── teams/{team_name}/config.json       # 团队配置
-├── tasks/{team_name}/task_*.json       # 任务文件
-├── inboxes/{team_name}/{agent}.json    # Agent 邮箱
-└── logs/{team_name}/{agent}.jsonl      # 活动日志
+├── open_teams.json                              # 配置文件（用户手动创建）
+├── my-project_20260420_153045/                  # 会话 1
+│   ├── teams/{team_name}/config.json            # 团队配置
+│   ├── tasks/{team_name}/task_*.json            # 任务文件
+│   ├── inboxes/{team_name}/{agent}.json         # Agent 邮箱
+│   └── logs/{team_name}/{agent}.jsonl           # 活动日志
+├── my-project_20260420_160000/                  # 会话 2
+│   ├── teams/...
+│   ├── tasks/...
+│   ├── inboxes/...
+│   └── logs/...
 ```
 
 ## 许可证

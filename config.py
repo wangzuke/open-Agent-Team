@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import dataclass, field, asdict
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +17,7 @@ CONFIG_FILE_NAME = "open_teams.json"
 class OpenTeamsConfig:
     project_root: Path = field(default_factory=lambda: Path.cwd())
     workspace_dir: Path = field(default_factory=lambda: Path.cwd() / ".open_teams")
+    session_dir: Path = field(default=None)
     teams_dir: Path = field(default=None)
     tasks_dir: Path = field(default=None)
     logs_dir: Path = field(default=None)
@@ -38,26 +40,32 @@ class OpenTeamsConfig:
     def __post_init__(self):
         self.project_root = Path(self.project_root)
         self.workspace_dir = Path(self.workspace_dir)
+        if self.session_dir is not None:
+            self.session_dir = Path(self.session_dir)
+        base_dir = self.session_dir if self.session_dir else self.workspace_dir
         if self.teams_dir is None:
-            self.teams_dir = self.workspace_dir / "teams"
+            self.teams_dir = base_dir / "teams"
         else:
             self.teams_dir = Path(self.teams_dir)
         if self.tasks_dir is None:
-            self.tasks_dir = self.workspace_dir / "tasks"
+            self.tasks_dir = base_dir / "tasks"
         else:
             self.tasks_dir = Path(self.tasks_dir)
         if self.logs_dir is None:
-            self.logs_dir = self.workspace_dir / "logs"
+            self.logs_dir = base_dir / "logs"
         else:
             self.logs_dir = Path(self.logs_dir)
         if self.inboxes_dir is None:
-            self.inboxes_dir = self.workspace_dir / "inboxes"
+            self.inboxes_dir = base_dir / "inboxes"
         else:
             self.inboxes_dir = Path(self.inboxes_dir)
 
     def ensure_dirs(self):
-        for d in [self.workspace_dir, self.teams_dir, self.tasks_dir,
-                  self.logs_dir, self.inboxes_dir]:
+        dirs = [self.workspace_dir]
+        if self.session_dir:
+            dirs.append(self.session_dir)
+        dirs.extend([self.teams_dir, self.tasks_dir, self.logs_dir, self.inboxes_dir])
+        for d in dirs:
             d.mkdir(parents=True, exist_ok=True)
 
     def team_dir(self, team_name: str) -> Path:
@@ -92,6 +100,7 @@ class OpenTeamsConfig:
             "team_name": self.team_name,
             "project_root": str(self.project_root),
             "workspace_dir": str(self.workspace_dir),
+            "session_dir": str(self.session_dir) if self.session_dir else None,
         }
 
     def save_to_file(self, path: Path | str):
@@ -203,7 +212,16 @@ def load_and_init_config(
     # 4. Ensure workspace_dir is relative to project_root if default
     if str(config.workspace_dir) == str(Path.cwd() / ".open_teams"):
         config.workspace_dir = config.project_root / ".open_teams"
-        config.__post_init__()
+
+    # 5. Generate session directory: <project_name>_<timestamp>
+    project_name = config.project_root.name or "project"
+    safe_name = "".join(c if c.isalnum() or c in "-_." else "_" for c in project_name)
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    config.session_dir = config.workspace_dir / f"{safe_name}_{ts}"
+    config.teams_dir = config.session_dir / "teams"
+    config.tasks_dir = config.session_dir / "tasks"
+    config.logs_dir = config.session_dir / "logs"
+    config.inboxes_dir = config.session_dir / "inboxes"
 
     config.ensure_dirs()
     _config = config

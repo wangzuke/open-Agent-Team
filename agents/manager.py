@@ -126,6 +126,7 @@ class AgentManager:
         config_dict = {
             "project_root": str(self.config.project_root),
             "workspace_dir": str(self.config.workspace_dir),
+            "session_dir": str(self.config.session_dir) if self.config.session_dir else None,
             "teams_dir": str(self.config.teams_dir),
             "tasks_dir": str(self.config.tasks_dir),
             "logs_dir": str(self.config.logs_dir),
