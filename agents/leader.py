@@ -1,0 +1,186 @@
+"""Team Leader agent - orchestrates the team from the main process."""
+
+from __future__ import annotations
+
+import json
+import time
+from pathlib import Path
+from typing import Any
+
+from open_teams.config import OpenTeamsConfig
+from open_teams.runtime.models import AgentIdentity
+from open_teams.runtime.context import RuntimeContext
+from open_teams.runtime.engine import QueryEngine
+from open_teams.agents.definition import AgentDefinition
+from open_teams.agents.manager import AgentManager
+from open_teams.coordination import TaskBoard, Mailbox, TeamManager
+from open_teams.tools import create_leader_tools
+from open_teams.prompts import SystemPromptBuilder
+from open_teams.logging import ActivityLogger
+from open_teams.utils.helpers import generate_id
+
+
+class TeamLeader:
+    """The team leader agent that runs in the main process."""
+
+    def __init__(self, config: OpenTeamsConfig, team_name: str = "default"):
+        self.config = config
+        self.team_name = team_name
+        self.agent_name = "team-lead"
+        self.model = config.leader_model
+
+        self.logger = ActivityLogger(config, team_name, self.agent_name)
+        self.logger.log_event("leader_init", {"team_name": team_name, "model": self.model})
+
+        self.team_manager = TeamManager(config)
+        self.task_board = TaskBoard(config, team_name)
+        self.mailbox = Mailbox(config, team_name)
+        self.agent_manager = AgentManager(config, team_name)
+
+        self._setup_team()
+
+        registry = create_leader_tools(config, team_name, self.agent_name)
+        prompt_builder = SystemPromptBuilder(config)
+        system_prompt = prompt_builder.build_leader_prompt(
+            team_name=team_name,
+            tool_names=registry.get_tool_names(),
+            working_dir=str(config.project_root),
+        )
+
+        identity = AgentIdentity(
+            agent_id=generate_id("leader-"),
+            agent_name=self.agent_name,
+            agent_type="leader",
+            team_name=team_name,
+            model=self.model,
+        )
+
+        self.context = RuntimeContext(
+            agent_identity=identity,
+            tools=registry.as_dict(),
+            system_prompt=system_prompt,
+            model=self.model,
+            config=config,
+            working_dir=config.project_root,
+        )
+
+        self.engine = QueryEngine(self.context, activity_logger=self.logger)
+        self._original_execute_tools = self.engine.execute_tools
+
+        def _hooked_execute_tools(tool_calls):
+            results = self._original_execute_tools(tool_calls)
+            for tc in tool_calls:
+                if tc.name == "spawn_agent":
+                    self._handle_spawn_request(tc.input)
+            return results
+
+        self.engine.execute_tools = _hooked_execute_tools
+
+    def _setup_team(self):
+        """Initialize team config and leader's inbox."""
+        existing = self.team_manager.get_team(self.team_name)
+        if not existing:
+            self.team_manager.create_team(
+                team_name=self.team_name,
+                description="open-teams coding team",
+                leader_name=self.agent_name,
+                leader_id=generate_id("leader-"),
+                leader_model=self.model,
+            )
+        self.mailbox.create_inbox(self.agent_name)
+
+    def _handle_spawn_request(self, params: dict[str, Any]):
+        """Handle a spawn_agent tool result by actually spawning the agent."""
+        name = params.get("name", "")
+        agent_type = params.get("agent_type", "coder")
+        task_desc = params.get("task_description", "")
+        model = params.get("model", "") or self.config.default_model
+
+        if not name:
+            return
+
+        definition = AgentDefinition.teammate(
+            name=name,
+            agent_type=agent_type,
+            model=model,
+        )
+
+        self.agent_manager.spawn_agent(definition, task_description=task_desc)
+        self.logger.log_event("agent_spawned", {
+            "name": name,
+            "type": agent_type,
+            "model": model,
+        })
+
+    def handle_user_message(self, message: str) -> str:
+        """Process a user message through the leader's query loop."""
+        self.logger.log_message("user", message)
+        self._check_inbox_and_inject()
+
+        result = self.engine.run_loop(initial_message=message)
+        self.logger.log_message("assistant", result)
+        return result
+
+    def handle_followup(self, message: str) -> str:
+        """Handle follow-up messages in the ongoing conversation."""
+        self.logger.log_message("user", message)
+        self._check_inbox_and_inject()
+
+        self.context.add_user_message(message)
+        result = self.engine.run_loop()
+        self.logger.log_message("assistant", result)
+        return result
+
+    def _check_inbox_and_inject(self):
+        """Check leader's inbox and inject any messages as system context."""
+        messages = self.mailbox.read_inbox(self.agent_name, unread_only=True)
+        if messages:
+            self.mailbox.mark_as_read(self.agent_name)
+            inbox_text = "\n".join(
+                f"[From {m['from_agent']}]: {m['content']}" for m in messages
+            )
+            self.context.add_user_message(
+                f"[INBOX MESSAGES - Messages from your teammates]\n{inbox_text}"
+            )
+
+    def get_team_status(self) -> dict[str, Any]:
+        """Get current team status."""
+        tasks = self.task_board.list_tasks()
+        agents = self.agent_manager.get_status()
+        members = self.team_manager.list_members(self.team_name)
+
+        return {
+            "team_name": self.team_name,
+            "tasks": {
+                "total": len(tasks),
+                "pending": sum(1 for t in tasks if t["status"] == "pending"),
+                "in_progress": sum(1 for t in tasks if t["status"] == "in_progress"),
+                "completed": sum(1 for t in tasks if t["status"] == "completed"),
+            },
+            "agents": agents,
+            "members": members,
+        }
+
+    def wait_for_completion(self, timeout: float = 600, poll_interval: float = 5):
+        """Wait for all teammate agents to complete, periodically checking inbox."""
+        start = time.monotonic()
+        while time.monotonic() - start < timeout:
+            if self.agent_manager.active_count == 0:
+                break
+
+            messages = self.mailbox.read_inbox(self.agent_name, unread_only=True)
+            if messages:
+                self.mailbox.mark_as_read(self.agent_name)
+                for msg in messages:
+                    self.logger.log_event("inbox_message", {
+                        "from": msg["from_agent"],
+                        "content": msg["content"][:500],
+                    })
+
+            time.sleep(poll_interval)
+
+    def shutdown(self):
+        """Gracefully shut down the team."""
+        self.logger.log_event("shutdown_initiated")
+        self.agent_manager.terminate_all()
+        self.logger.log_event("shutdown_complete")

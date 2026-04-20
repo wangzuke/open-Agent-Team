@@ -1,0 +1,308 @@
+"""CLI entry point for open-teams."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+import signal
+from pathlib import Path
+
+from open_teams.config import load_and_init_config, OpenTeamsConfig, CONFIG_FILE_NAME
+from open_teams.agents.leader import TeamLeader
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        prog="open-teams",
+        description="Multi-agent collaborative coding system",
+    )
+    parser.add_argument(
+        "--config",
+        type=str,
+        default=None,
+        help=f"Path to JSON config file (default: .open_teams/{CONFIG_FILE_NAME})",
+    )
+    parser.add_argument(
+        "--init-config",
+        action="store_true",
+        help="Generate a default config file and exit",
+    )
+    parser.add_argument(
+        "--project-root",
+        type=str,
+        default=None,
+        help="Project root directory (default: cwd)",
+    )
+    parser.add_argument(
+        "--team-name",
+        type=str,
+        default=None,
+        help="Team name (default: 'default')",
+    )
+    parser.add_argument(
+        "--provider",
+        type=str,
+        default=None,
+        choices=["anthropic", "openai"],
+        help="LLM provider: 'anthropic' or 'openai' (OpenAI-compatible)",
+    )
+    parser.add_argument(
+        "--leader-model",
+        type=str,
+        default=None,
+        help="Model for team leader",
+    )
+    parser.add_argument(
+        "--teammate-model",
+        type=str,
+        default=None,
+        help="Default model for teammates",
+    )
+    parser.add_argument(
+        "--api-key",
+        type=str,
+        default=None,
+        help="API key (default: ANTHROPIC_API_KEY or OPENAI_API_KEY env var)",
+    )
+    parser.add_argument(
+        "--base-url",
+        type=str,
+        default=None,
+        help="API base URL override (for proxies or third-party providers)",
+    )
+    parser.add_argument(
+        "--max-tokens",
+        type=int,
+        default=None,
+        help="Max tokens per API call",
+    )
+    parser.add_argument(
+        "--max-agent-turns",
+        type=int,
+        default=None,
+        help="Max turns per agent",
+    )
+    parser.add_argument(
+        "--temperature",
+        type=float,
+        default=None,
+        help="Sampling temperature",
+    )
+    parser.add_argument(
+        "-m", "--message",
+        type=str,
+        default=None,
+        help="Single message mode: send one message and exit",
+    )
+    return parser.parse_args()
+
+
+def generate_default_config(path: Path):
+    """Write a default configuration file with comments."""
+    config_template = {
+        "provider": "anthropic",
+        "api_key": "",
+        "base_url": None,
+        "leader_model": "claude-opus-4-6",
+        "default_model": "claude-sonnet-4-6",
+        "max_tokens": 16384,
+        "max_turns": 200,
+        "max_agent_turns": 50,
+        "temperature": 0.0,
+        "team_name": "default",
+        "project_root": ".",
+    }
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(config_template, f, indent=2, ensure_ascii=False)
+    print(f"Default config written to: {path}")
+    print()
+    print("Edit the file to set your api_key and other options.")
+    print("Provider options:")
+    print('  "anthropic" — Anthropic Claude API (default)')
+    print('  "openai"    — Any OpenAI-compatible API (OpenAI, DeepSeek, Qwen, vLLM, etc.)')
+    print()
+    print("For OpenAI-compatible providers, set:")
+    print('  "provider":  "openai"')
+    print('  "base_url":  "https://api.deepseek.com/v1"  (example)')
+    print('  "leader_model": "deepseek-chat"              (example)')
+    print('  "default_model": "deepseek-chat"             (example)')
+
+
+def print_banner(config: OpenTeamsConfig):
+    print("=" * 60)
+    print("  open-teams: Multi-Agent Collaborative Coding System")
+    print("=" * 60)
+    print(f"  Provider: {config.provider}")
+    print(f"  Leader:   {config.leader_model}")
+    print(f"  Teammate: {config.default_model}")
+    if config.base_url:
+        print(f"  Base URL: {config.base_url}")
+    print()
+    print("Commands:")
+    print("  /status  - Show team status")
+    print("  /tasks   - Show task board")
+    print("  /agents  - Show agent status")
+    print("  /quit    - Exit")
+    print()
+
+
+def format_status(status: dict) -> str:
+    lines = [f"Team: {status['team_name']}"]
+    t = status["tasks"]
+    lines.append(
+        f"Tasks: {t['total']} total | {t['pending']} pending | "
+        f"{t['in_progress']} in progress | {t['completed']} completed"
+    )
+    if status["agents"]:
+        lines.append("Agents:")
+        for name, st in status["agents"].items():
+            lines.append(f"  - {name}: {st}")
+    else:
+        lines.append("Agents: none spawned yet")
+    return "\n".join(lines)
+
+
+def format_tasks(leader: TeamLeader) -> str:
+    tasks = leader.task_board.list_tasks()
+    if not tasks:
+        return "No tasks on the board."
+    lines = []
+    for t in sorted(tasks, key=lambda x: int(x["id"])):
+        icon = {"pending": "[ ]", "in_progress": "[~]", "completed": "[x]"}.get(
+            t["status"], "[?]"
+        )
+        owner = t.get("owner") or "unassigned"
+        lines.append(f"  #{t['id']} {icon} {t['subject']} ({owner})")
+        if t.get("blockedBy"):
+            lines.append(f"       blocked by: {', '.join(t['blockedBy'])}")
+    return "\n".join(lines)
+
+
+def main():
+    args = parse_args()
+
+    # --init-config: generate default config and exit
+    if args.init_config:
+        out_path = Path(args.config) if args.config else Path.cwd() / ".open_teams" / CONFIG_FILE_NAME
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        if out_path.exists():
+            print(f"Config file already exists: {out_path}")
+            print("Delete it first or specify a different path with --config.")
+            sys.exit(1)
+        generate_default_config(out_path)
+        sys.exit(0)
+
+    # Build CLI overrides dict (only non-None values)
+    cli_overrides = {}
+    if args.project_root:
+        cli_overrides["project_root"] = args.project_root
+    if args.team_name:
+        cli_overrides["team_name"] = args.team_name
+    if args.provider:
+        cli_overrides["provider"] = args.provider
+    if args.leader_model:
+        cli_overrides["leader_model"] = args.leader_model
+    if args.teammate_model:
+        cli_overrides["default_model"] = args.teammate_model
+    if args.api_key:
+        cli_overrides["api_key"] = args.api_key
+    if args.base_url:
+        cli_overrides["base_url"] = args.base_url
+    if args.max_tokens is not None:
+        cli_overrides["max_tokens"] = args.max_tokens
+    if args.max_agent_turns is not None:
+        cli_overrides["max_agent_turns"] = args.max_agent_turns
+    if args.temperature is not None:
+        cli_overrides["temperature"] = args.temperature
+
+    # Load config: config file -> env vars -> CLI args (highest priority)
+    config = load_and_init_config(
+        config_file=args.config,
+        cli_overrides=cli_overrides if cli_overrides else None,
+    )
+
+    if not config.api_key:
+        print("Error: No API key configured.")
+        print("Set it via one of:")
+        print(f"  1. \"api_key\" in .open_teams/{CONFIG_FILE_NAME}")
+        print("  2. ANTHROPIC_API_KEY or OPENAI_API_KEY environment variable")
+        print("  3. --api-key command-line flag")
+        print()
+        print(f"Run 'python -m open_teams.main --init-config' to generate a config file.")
+        sys.exit(1)
+
+    leader = TeamLeader(config, team_name=config.team_name)
+
+    def signal_handler(sig, frame):
+        print("\nShutting down...")
+        leader.shutdown()
+        sys.exit(0)
+
+    signal.signal(signal.SIGINT, signal_handler)
+
+    # Single-message mode
+    if args.message:
+        response = leader.handle_user_message(args.message)
+        print(response)
+        leader.wait_for_completion(timeout=600)
+        leader.shutdown()
+        return
+
+    # Interactive REPL
+    print_banner(config)
+
+    first_message = True
+    while True:
+        try:
+            user_input = input("you> ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print("\nShutting down...")
+            leader.shutdown()
+            break
+
+        if not user_input:
+            continue
+
+        if user_input.lower() == "/quit":
+            print("Shutting down...")
+            leader.shutdown()
+            break
+
+        if user_input.lower() == "/status":
+            print(format_status(leader.get_team_status()))
+            continue
+
+        if user_input.lower() == "/tasks":
+            print(format_tasks(leader))
+            continue
+
+        if user_input.lower() == "/agents":
+            status = leader.agent_manager.get_status()
+            if not status:
+                print("No agents spawned yet.")
+            else:
+                for name, st in status.items():
+                    print(f"  {name}: {st}")
+            continue
+
+        if user_input.lower() == "/config":
+            print(json.dumps(config.to_dict(), indent=2, ensure_ascii=False))
+            continue
+
+        try:
+            if first_message:
+                response = leader.handle_user_message(user_input)
+                first_message = False
+            else:
+                response = leader.handle_followup(user_input)
+            print(f"\nteam-lead> {response}\n")
+        except Exception as e:
+            print(f"\nError: {e}\n")
+
+
+if __name__ == "__main__":
+    import multiprocessing
+    multiprocessing.freeze_support()
+    main()
