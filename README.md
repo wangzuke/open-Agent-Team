@@ -43,7 +43,7 @@
 | **Runtime** | `runtime/` | LLM query loop、Agent 上下文管理、消息模型 |
 | **Agents** | `agents/` | Agent 定义、多进程派生与生命周期、Leader 编排逻辑 |
 | **Coordination** | `coordination/` | 任务面板、邮箱通信、团队配置 |
-| **Tools** | `tools/` | 14 个工具：文件读写编辑、代码搜索、Shell、Agent 派生、通信（含邮箱收发）、任务管理 |
+| **Tools** | `tools/` | 13 个工具：文件读写编辑、代码搜索、Shell、Agent 派生、通信、任务管理 |
 | **Prompts** | `prompts/` | 分层提示词系统：基础 + 角色 + 环境 + 协作指令 |
 | **Logging** | `logging/` | 按 Agent 独立的 JSONL 活动日志 |
 
@@ -77,7 +77,7 @@ open-teams 支持三种配置方式，优先级从高到低：**命令行参数 
 python -m open_teams.main --init-config
 ```
 
-这会在 `.open_teams/` 目录下创建 `open_teams.json`：
+这会在 `open_teams/` 包目录下创建 `open_teams.json`：
 
 ```json
 {
@@ -88,14 +88,14 @@ python -m open_teams.main --init-config
   "default_model": "claude-sonnet-4-6",
   "max_tokens": 16384,
   "max_turns": 200,
-  "max_agent_turns": 50,
+  "max_agent_turns": 200,
   "temperature": 0.0,
   "team_name": "default",
   "project_root": "."
 }
 ```
 
-也可以手动创建配置文件：在项目根目录下创建 `.open_teams/open_teams.json`，按上述格式填写配置即可。
+也可以手动创建配置文件：在 `open_teams/` 包目录下创建 `open_teams.json`，按上述格式填写配置即可。
 ```
 
 **配置字段说明：**
@@ -109,7 +109,7 @@ python -m open_teams.main --init-config
 | `default_model` | string | `"claude-sonnet-4-6"` | Teammate 默认模型 |
 | `max_tokens` | int | `16384` | 单次 API 调用最大 token 数 |
 | `max_turns` | int | `200` | Leader 最大对话轮次 |
-| `max_agent_turns` | int | `50` | 每个 Teammate 最大对话轮次 |
+| `max_agent_turns` | int | `200` | 每个 Teammate 最大对话轮次 |
 | `temperature` | float | `0.0` | 采样温度 |
 | `team_name` | string | `"default"` | 团队名称 |
 | `project_root` | string | `"."` | 项目根目录 |
@@ -135,8 +135,8 @@ export OPENAI_BASE_URL="https://api.deepseek.com/v1"  # 可选
 ### 命令行参数
 
 ```
---config          配置文件路径（默认 .open_teams/open_teams.json）
---init-config     在 .open_teams/ 下生成默认配置文件并退出
+--config          配置文件路径（默认 open_teams/open_teams.json）
+--init-config     在 open_teams/ 包目录下生成默认配置文件并退出
 --project-root    项目根目录（默认当前目录）
 --team-name       团队名称（默认 "default"）
 --provider        LLM 提供商：anthropic / openai
@@ -270,15 +270,16 @@ Leader 根据任务类型派生合适的 Agent，每个 Agent 运行在独立进
 - **Tester** — 编写测试、验证功能
 - **Reviewer** — 代码审查、质量保证
 
-### 4. 并行执行
+### 4. 消息驱动的并行执行
 
-每个 Teammate 独立运行自己的 LLM query loop：
+每个 Teammate 独立运行自己的 LLM query loop，通过消息驱动（而非轮询）发现和执行任务：
 
-1. 从任务面板领取分配的任务
-2. 标记任务为 `in_progress`
-3. 使用工具完成工作（读写文件、搜索代码、执行命令）
-4. 标记任务为 `completed`
-5. 通过邮箱向 Leader 报告进度
+1. **预等待**：Agent 启动后进入零 LLM 成本的等待状态，直到有可执行任务
+2. 收到 `[TASK READY]` 通知后开始工作
+3. 标记任务为 `in_progress`
+4. 使用工具完成工作（读写文件、搜索代码、执行命令）
+5. 标记任务为 `completed`（系统自动通知下游被阻塞的任务 owner）
+6. 通过邮箱向 Leader 报告结果
 
 ### 5. 协调与通信
 
@@ -294,7 +295,8 @@ Coder-A ──邮箱──→ Team Leader ──邮箱──→ Coder-B
 
 - **任务面板**：基于文件系统的共享任务板，FileLock 保证并发安全
 - **邮箱系统**：每个 Agent 独立的 JSON 收件箱，支持点对点和广播
-- **依赖管理**：任务的 `blockedBy` 字段自动追踪，完成时自动解除阻塞
+- **消息驱动**：后台线程每 1s 轮询 inbox，通过 queue 缓冲消息并在每轮 LLM 调用前注入
+- **依赖管理**：任务完成时自动解除下游任务的阻塞，并发送 `[TASK READY]` 通知
 
 ### 6. 结果汇总
 
@@ -302,7 +304,7 @@ Coder-A ──邮箱──→ Team Leader ──邮箱──→ Coder-B
 
 ## 工具集
 
-### Leader 专属工具（14 个）
+### 工具集合（13 个）
 
 | 工具 | 说明 |
 |------|------|
@@ -312,18 +314,14 @@ Coder-A ──邮箱──→ Team Leader ──邮箱──→ Coder-B
 | `glob_search` | 按 glob 模式搜索文件 |
 | `grep_search` | 按正则搜索文件内容 |
 | `shell` | 执行 Shell 命令 |
-| `spawn_agent` | **派生新的 Teammate Agent** |
-| `team_create` | **创建团队** |
+| `spawn_agent` | **派生新的 Teammate Agent (Leader专属)** 
 | `send_message` | 向其他 Agent 发送消息 |
 | `check_inbox` | 读取收件箱中的未读消息 |
 | `task_create` | 创建任务 |
-| `task_update` | 更新任务状态/分配 |
+| `task_update` | 更新任务状态/分配（完成时自动通知下游） |
 | `task_list` | 列出所有任务 |
 | `task_get` | 获取任务详情 |
 
-### Teammate 工具（12 个）
-
-与 Leader 相同，但**不包含** `spawn_agent` 和 `team_create`。
 
 ## 项目结构
 
@@ -336,14 +334,14 @@ open_teams/
 ├── requirements.txt
 │
 ├── runtime/                 # 核心运行时
-│   ├── engine.py            # QueryEngine — LLM 交互循环
+│   ├── engine.py            # QueryEngine — LLM 交互循环 + 后台 inbox 轮询
 │   ├── context.py           # RuntimeContext — 可克隆的 Agent 上下文
 │   ├── llm_client.py        # LLM 客户端抽象层（Anthropic + OpenAI）
 │   └── models.py            # Message, ToolCall, ToolResult 等数据模型
 │
 ├── agents/                  # Agent 系统
 │   ├── definition.py        # AgentDefinition 定义规格
-│   ├── manager.py           # AgentManager — 多进程派生与管理
+│   ├── manager.py           # AgentManager — 多进程派生与管理 + 预等待机制
 │   └── leader.py            # TeamLeader — 主编排 Agent
 │
 ├── coordination/            # 协调层
@@ -358,8 +356,7 @@ open_teams/
 │   ├── shell_tool.py        # Shell 命令执行
 │   ├── agent_tool.py        # SpawnAgent（Leader 专属）
 │   ├── message_tool.py      # SendMessage 通信
-│   ├── task_tools.py        # TaskCreate / Update / List / Get
-│   ├── team_tool.py         # TeamCreate
+│   ├── task_tools.py        # TaskCreate / Update（含依赖通知） / List / Get
 │   └── registry.py          # 工具注册工厂
 │
 ├── prompts/                 # 提示词系统
@@ -407,26 +404,29 @@ open_teams/
 
 ### 工具权限隔离
 
-Leader 拥有 `spawn_agent` 和 `team_create` 等管理工具，Teammate 只能使用开发工具和通信工具，防止 Agent 越权操作。
+Leader 拥有 `spawn_agent` 等管理工具，Teammate 只能使用开发工具和通信工具，防止 Agent 越权操作。团队创建由程序化完成（`_setup_team`），不暴露为 LLM 工具，避免重复创建。
+
+### 消息驱动的任务发现
+
+Agent 不通过轮询 `task_list` 发现任务，而是通过三层消息机制：
+
+1. **后台 inbox 轮询线程**：daemon 线程每 1s 检查 inbox，将消息推入 `queue.Queue`，主循环每轮 LLM 调用前 drain 注入为 `[INBOX]` user turn
+2. **任务就绪通知**：Agent 调用 `task_update(status="completed")` 时，系统自动检测新解锁的下游任务并发送 `[TASK READY]` 消息
+3. **预等待**：Worker 进程启动后在进入 LLM loop 之前先阻塞等待可执行任务（纯 Python sleep，零 LLM 成本）
 
 ## 运行时数据
 
-系统运行时在项目根目录下创建 `.open_teams/` 目录。每次运行会自动生成一个以 `<项目名>_<时间戳>` 命名的会话目录，实现不同项目和不同运行之间的隔离：
+系统运行时在项目根目录下创建 `.open_teams/` 目录，所有运行时数据直接存放其中：
 
 ```
 .open_teams/
-├── open_teams.json                              # 配置文件（用户手动创建）
-├── my-project_20260420_153045/                  # 会话 1
-│   ├── teams/{team_name}/config.json            # 团队配置
-│   ├── tasks/{team_name}/task_*.json            # 任务文件
-│   ├── inboxes/{team_name}/{agent}.json         # Agent 邮箱
-│   └── logs/{team_name}/{agent}.jsonl           # 活动日志
-├── my-project_20260420_160000/                  # 会话 2
-│   ├── teams/...
-│   ├── tasks/...
-│   ├── inboxes/...
-│   └── logs/...
+├── teams/{team_name}/config.json            # 团队配置与成员列表
+├── tasks/{team_name}/task_*.json            # 任务文件（每任务一个 JSON）
+├── inboxes/{team_name}/{agent}.json         # Agent 邮箱
+└── logs/{team_name}/{agent}.jsonl           # 活动日志
 ```
+
+配置文件位于 `open_teams/open_teams.json`（包目录下），不在 `.open_teams/` 中。
 
 ## 许可证
 

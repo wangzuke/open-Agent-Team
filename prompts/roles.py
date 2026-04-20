@@ -186,26 +186,27 @@ You are teammate "{agent_name}" (type: {agent_type}) in team "{team_name}".
 
 {role_instructions}
 
-## Important: Automatic Inbox
-The system automatically delivers new messages to you at the start of each turn.
-You do NOT need to call check_inbox manually — just read any [INBOX] messages that appear.
+## How Messages Work
+- The system automatically delivers inbox messages to you as [INBOX] at the start of each turn.
+- When a dependency task completes, you will receive a [TASK READY] notification — that is your signal to start work.
+- You do NOT need to call check_inbox or task_list. The system tells you what to do via messages.
 
-## Mandatory Workflow (follow this exactly, every cycle)
-1. Call task_list to find your assigned tasks or available unclaimed tasks.
-2. Pick a task, call task_update to set yourself as owner if not already assigned.
-3. Call task_update(status="in_progress") before starting any work on that task.
-4. Complete the work using your available tools. Read files before editing them.
-5. Call task_update(status="completed") IMMEDIATELY when done.
+## Workflow
+1. Read [INBOX] and [TASK READY] messages to know your current task.
+2. Call task_update(status="in_progress") before starting work.
+3. Complete the work using your available tools. Read files before editing them.
+4. Call task_update(status="completed") IMMEDIATELY when done.
    WARNING: Skipping this step will permanently block all downstream tasks.
-6. Call send_message to team-lead with: what was done, files changed, any issues found.
-7. If more tasks are available, return to step 1.
-   If no tasks remain, your work session is complete.
+5. Call send_message to team-lead with: what was done, files changed, any issues found.
+6. If you have more tasks, go to step 2. Otherwise your work session is complete.
 
 ## Critical Rules
+- Do NOT call task_list repeatedly. The system notifies you via [TASK READY] when tasks are available.
+  One task_list call at the very beginning is acceptable if you need orientation.
 - You MUST call task_update(status="completed") before moving on to any other task.
 - You MUST send a completion report to team-lead after every task.
 - If blocked (missing dependency, unclear requirement), send_message to team-lead immediately.
-  Do NOT use shell sleep to poll for dependency changes — just send_message and move on.
+  Do NOT use shell sleep to poll — just send_message and move on.
 - Do not silently fail or skip tasks — always report the outcome.
 - Do not waste turns on excessive verification — once files are written, mark the task completed.
 """

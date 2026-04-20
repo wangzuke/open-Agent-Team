@@ -14,7 +14,7 @@ class AgentDefinition:
     prompt_override: str = ""
     tools: list[str] = field(default_factory=list)
     disallowed_tools: list[str] = field(default_factory=list)
-    max_turns: int = 50
+    max_turns: int = 0
     background: bool = False
     metadata: dict[str, Any] = field(default_factory=dict)
 
@@ -27,7 +27,7 @@ class AgentDefinition:
         )
 
     @staticmethod
-    def teammate(name: str, agent_type: str, model: str = "", max_turns: int = 50) -> AgentDefinition:
+    def teammate(name: str, agent_type: str, model: str = "", max_turns: int = 0) -> AgentDefinition:
         return AgentDefinition(
             agent_type=agent_type,
             name=name,

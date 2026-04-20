@@ -195,6 +195,32 @@ class TaskBoard:
                     other["updatedAt"] = timestamp_now()
                     self._write_task_file(other)
 
+    def update_task_with_deps(self, task_id: str, **kwargs: Any) -> tuple[dict, list[dict]]:
+        """Update a task and return (updated_task, newly_unblocked_tasks).
+
+        Same as :meth:`update_task`, but when the status is set to
+        ``"completed"`` it additionally scans for tasks whose ``blockedBy``
+        list just became empty.
+        """
+        task = self.update_task(task_id, **kwargs)
+        newly_unblocked: list[dict] = []
+        if kwargs.get("status") == "completed":
+            newly_unblocked = self._get_newly_unblocked(task_id)
+        return task, newly_unblocked
+
+    def _get_newly_unblocked(self, completed_id: str) -> list[dict]:
+        """Return tasks whose blockedBy became empty after *completed_id* was removed."""
+        result: list[dict] = []
+        for tid in self._all_task_ids():
+            if tid == completed_id:
+                continue
+            task = self._read_task_file(tid)
+            if task is None:
+                continue
+            if task.get("blockedBy") == [] and task.get("status") in ("pending", "blocked"):
+                result.append(task)
+        return result
+
     def list_tasks(
         self,
         filter_status: Optional[str] = None,

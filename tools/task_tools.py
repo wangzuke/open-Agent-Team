@@ -154,10 +154,11 @@ class TaskUpdateTool(Tool):
         self._config: Optional["OpenTeamsConfig"] = None
         self._board: Optional["TaskBoard"] = None
 
-    def set_context(self, team_name: str, config: "OpenTeamsConfig") -> None:
+    def set_context(self, team_name: str, config: "OpenTeamsConfig", agent_name: str = "") -> None:
         self._team_name = team_name
         self._config = config
         self._board = None
+        self._agent_name = agent_name
 
     def _get_board(self) -> "TaskBoard":
         if self._board is None:
@@ -172,7 +173,6 @@ class TaskUpdateTool(Tool):
     def execute(self, params: dict[str, Any]) -> str:
         task_id: str = params["task_id"]
 
-        # Build kwargs for update_task from optional fields
         update_kwargs: dict[str, Any] = {}
         for field in ("status", "owner", "description"):
             if field in params and params[field] is not None:
@@ -187,7 +187,13 @@ class TaskUpdateTool(Tool):
 
         try:
             board = self._get_board()
-            task = board.update_task(task_id, **update_kwargs)
+
+            if update_kwargs.get("status") == "completed":
+                task, newly_unblocked = board.update_task_with_deps(task_id, **update_kwargs)
+                self._notify_unblocked(newly_unblocked)
+            else:
+                task = board.update_task(task_id, **update_kwargs)
+
             return f"Task updated successfully:\n{_format_task(task)}"
         except KeyError as exc:
             return f"Error: {exc}"
@@ -195,6 +201,33 @@ class TaskUpdateTool(Tool):
             return f"Error: {exc}"
         except Exception as exc:
             return f"Error updating task {task_id}: {exc}"
+
+    def _notify_unblocked(self, tasks: list[dict]) -> None:
+        """Send inbox notifications to owners of newly-unblocked tasks."""
+        if not tasks or not self._config or not self._team_name:
+            return
+        try:
+            from open_teams.coordination.mailbox import Mailbox
+            mailbox = Mailbox(self._config, self._team_name)
+            sender = self._agent_name or "system"
+            for task in tasks:
+                owner = task.get("owner")
+                if not owner:
+                    continue
+                content = (
+                    f"[TASK READY] Task #{task['id']} '{task.get('subject', '')}' "
+                    f"is now unblocked and ready for you to work on.\n"
+                    f"Call task_get(task_id=\"{task['id']}\") for full details, "
+                    f"then start working."
+                )
+                mailbox.send_message(
+                    from_agent=sender,
+                    to_agent=owner,
+                    content=content,
+                    summary=f"Task #{task['id']} ready",
+                )
+        except Exception:
+            pass
 
 
 class TaskListTool(Tool):

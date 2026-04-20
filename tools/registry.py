@@ -10,7 +10,6 @@ from .shell_tool import ShellTool
 from .agent_tool import SpawnAgentTool
 from .message_tool import SendMessageTool, CheckInboxTool
 from .task_tools import TaskCreateTool, TaskUpdateTool, TaskListTool, TaskGetTool
-from .team_tool import TeamCreateTool
 
 
 def create_leader_tools(
@@ -21,7 +20,7 @@ def create_leader_tools(
     """Build a ToolRegistry with the full leader tool set.
 
     Includes: file I/O, search, shell, spawn_agent, send_message, check_inbox,
-    all task tools, and team_create.
+    and all task tools.
     """
     registry = ToolRegistry()
 
@@ -52,15 +51,14 @@ def create_leader_tools(
     registry.register(inbox)
 
     # Task management
-    for tool_cls in [TaskCreateTool, TaskUpdateTool, TaskListTool, TaskGetTool]:
+    for tool_cls in [TaskCreateTool, TaskListTool, TaskGetTool]:
         t = tool_cls()
         t.set_context(team_name, config)
         registry.register(t)
 
-    # Team management
-    tc = TeamCreateTool()
-    tc.set_context(config)
-    registry.register(tc)
+    task_update = TaskUpdateTool()
+    task_update.set_context(team_name, config, agent_name=agent_name)
+    registry.register(task_update)
 
     return registry
 
@@ -101,9 +99,13 @@ def create_teammate_tools(
     registry.register(inbox)
 
     # Task management
-    for tool_cls in [TaskCreateTool, TaskUpdateTool, TaskListTool, TaskGetTool]:
+    for tool_cls in [TaskCreateTool, TaskListTool, TaskGetTool]:
         t = tool_cls()
         t.set_context(team_name, config)
         registry.register(t)
+
+    task_update = TaskUpdateTool()
+    task_update.set_context(team_name, config, agent_name=agent_name)
+    registry.register(task_update)
 
     return registry

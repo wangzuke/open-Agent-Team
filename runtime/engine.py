@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+import queue
+import threading
 import time
 from typing import Any
 
@@ -49,8 +51,8 @@ class QueryEngine:
         self.activity_logger = activity_logger or (
             logger if not isinstance(logger, logging.Logger) else None
         )
-        self._last_inbox_check: float = 0.0
-        self._inbox_check_interval: float = 10.0
+        self._inbox_queue: queue.Queue = queue.Queue()
+        self._inbox_poller_started: bool = False
 
         if llm_client is not None:
             self.client = llm_client
@@ -158,58 +160,75 @@ class QueryEngine:
         return results
 
     # ------------------------------------------------------------------
-    # Automatic inbox injection
+    # Background inbox polling
     # ------------------------------------------------------------------
 
-    def _check_and_inject_inbox(self) -> str | None:
-        """Check the agent's inbox and return formatted unread messages.
+    def _start_inbox_poller(self) -> None:
+        """Start the background inbox polling thread (idempotent)."""
+        if self._inbox_poller_started:
+            return
+        ctx = self.context
+        if not ctx.agent_identity.team_name:
+            return
+        self._inbox_poller_started = True
+        t = threading.Thread(target=self._inbox_poll_loop, daemon=True)
+        t.start()
 
-        Returns *None* when there are no new messages or when the throttle
-        interval has not elapsed since the last check.  Failures are
-        silently swallowed so they never break the main loop.
-        """
-        now = time.monotonic()
-        if now - self._last_inbox_check < self._inbox_check_interval:
-            return None
-        self._last_inbox_check = now
-
+    def _inbox_poll_loop(self) -> None:
+        """Background thread: poll inbox every 1 s, push messages to queue."""
         ctx = self.context
         team_name = ctx.agent_identity.team_name
         agent_name = ctx.agent_identity.agent_name
-        if not team_name:
+
+        while not ctx.abort_event.is_set():
+            try:
+                from open_teams.coordination.mailbox import Mailbox
+
+                mailbox = Mailbox(ctx.config, team_name)
+                messages = mailbox.read_inbox(agent_name, unread_only=True)
+                if messages:
+                    msg_ids = [m["id"] for m in messages]
+                    mailbox.mark_as_read(agent_name, msg_ids)
+                    for m in messages:
+                        self._inbox_queue.put(m)
+                    if self.activity_logger:
+                        self.activity_logger.log_event(
+                            "inbox_polled",
+                            {"count": len(messages), "from": [m.get("from_agent") for m in messages]},
+                        )
+            except Exception as exc:
+                self.logger.debug("_inbox_poll_loop error: %s", exc)
+
+            ctx.abort_event.wait(1.0)
+
+    def _drain_inbox_queue(self) -> str | None:
+        """Drain all pending messages from the queue and return formatted text."""
+        messages: list[dict] = []
+        while True:
+            try:
+                messages.append(self._inbox_queue.get_nowait())
+            except queue.Empty:
+                break
+        if not messages:
             return None
 
-        try:
-            from open_teams.coordination.mailbox import Mailbox
+        lines = [f"[INBOX] You have {len(messages)} new message(s):"]
+        for m in messages:
+            sender = m.get("from_agent", "unknown")
+            summary = m.get("summary", "")
+            content = m.get("content", "")
+            header = f"[From {sender}]"
+            if summary:
+                header += f" ({summary})"
+            lines.append(f"\n{header}\n{content}")
 
-            mailbox = Mailbox(ctx.config, team_name)
-            messages = mailbox.read_inbox(agent_name, unread_only=True)
-            if not messages:
-                return None
+        if self.activity_logger:
+            self.activity_logger.log_event(
+                "inbox_injected",
+                {"count": len(messages), "from": [m.get("from_agent") for m in messages]},
+            )
 
-            msg_ids = [m["id"] for m in messages]
-            mailbox.mark_as_read(agent_name, msg_ids)
-
-            lines = [f"[INBOX] You have {len(messages)} new message(s):"]
-            for m in messages:
-                sender = m.get("from_agent", "unknown")
-                summary = m.get("summary", "")
-                content = m.get("content", "")
-                header = f"[From {sender}]"
-                if summary:
-                    header += f" ({summary})"
-                lines.append(f"\n{header}\n{content}")
-
-            if self.activity_logger:
-                self.activity_logger.log_event(
-                    "inbox_injected",
-                    {"count": len(messages), "from": [m.get("from_agent") for m in messages]},
-                )
-
-            return "\n".join(lines)
-        except Exception as exc:
-            self.logger.debug("_check_and_inject_inbox failed: %s", exc)
-            return None
+        return "\n".join(lines)
 
     # ------------------------------------------------------------------
     # Main agentic loop
@@ -227,6 +246,8 @@ class QueryEngine:
         """
         ctx = self.context
         max_turns: int = ctx.config.max_agent_turns
+
+        self._start_inbox_poller()
 
         if initial_message is not None:
             ctx.add_user_message(initial_message)
@@ -247,9 +268,8 @@ class QueryEngine:
                     f"before this agent session ends automatically.\n"
                     "IMMEDIATE ACTIONS REQUIRED:\n"
                     "1. Call task_update(status=\"completed\") for any finished tasks NOW.\n"
-                    "2. Call check_inbox to read any pending messages.\n"
-                    "3. Call send_message to team-lead with a final status summary.\n"
-                    "4. If a task cannot be finished, call task_update(status=\"blocked\")."
+                    "2. Call send_message to team-lead with a final status summary.\n"
+                    "3. If a task cannot be finished, call task_update(status=\"blocked\")."
                 )
                 ctx.add_user_message(warn_msg)
                 self.logger.warning(
@@ -266,7 +286,7 @@ class QueryEngine:
                 max_turns,
             )
 
-            inbox_text = self._check_and_inject_inbox()
+            inbox_text = self._drain_inbox_queue()
             if inbox_text:
                 ctx.add_user_message(inbox_text)
 

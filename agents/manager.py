@@ -28,6 +28,9 @@ def _run_worker_process(
 ):
     """Entry point for a teammate worker process."""
     import os
+    import sys
+    sys.dont_write_bytecode = True
+    os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
     os.chdir(working_dir)
 
     from open_teams.config import init_config
@@ -81,15 +84,20 @@ def _run_worker_process(
         f"You have been spawned as teammate '{agent_name}' (type: {agent_type}) "
         f"in team '{team_name}'.\n\n"
         f"Your initial task description:\n{task_description}\n\n"
-        "Inbox messages are delivered to you AUTOMATICALLY — you do not need to call check_inbox.\n\n"
-        "Follow this workflow exactly:\n"
-        "1. Call task_list to find tasks assigned to you or available to claim.\n"
-        "2. Call task_update(status='in_progress') before starting work on a task.\n"
+        "## How messages work\n"
+        "- Inbox messages are delivered to you AUTOMATICALLY via [INBOX] at the start of each turn.\n"
+        "- When a dependency completes, you will receive a [TASK READY] message — that is your signal to start.\n"
+        "- You do NOT need to call check_inbox or task_list to discover work.\n\n"
+        "## Workflow\n"
+        "1. Read any [INBOX] or [TASK READY] messages to know what to work on.\n"
+        "2. Call task_update(status='in_progress') before starting.\n"
         "3. Complete the work using your tools.\n"
-        "4. Call task_update(status='completed') IMMEDIATELY when done — this unblocks downstream tasks.\n"
+        "4. Call task_update(status='completed') IMMEDIATELY when done.\n"
         "5. Call send_message to team-lead with a completion report.\n"
-        "6. Repeat from step 1 if more tasks exist."
+        "6. If you have more tasks, go to step 2. Otherwise your work is done."
     )
+
+    _wait_for_actionable_task(config, team_name, agent_name, logger)
 
     agent_crashed = False
     crash_summary = ""
@@ -152,6 +160,33 @@ def _run_worker_process(
     logger.log_event("agent_shutdown")
 
 
+def _wait_for_actionable_task(
+    config,
+    team_name: str,
+    agent_name: str,
+    logger,
+    timeout: float = 600,
+) -> None:
+    """Block (zero LLM cost) until the agent has at least one non-blocked task."""
+    from open_teams.coordination.task_board import TaskBoard
+
+    board = TaskBoard(config, team_name)
+    start = time.monotonic()
+
+    while time.monotonic() - start < timeout:
+        try:
+            tasks = board.list_tasks(filter_owner=agent_name)
+            for t in tasks:
+                if t["status"] in ("pending", "in_progress") and not t.get("blockedBy"):
+                    logger.log_event("task_ready", {"task_id": t["id"], "wait_seconds": round(time.monotonic() - start, 1)})
+                    return
+        except Exception:
+            pass
+        time.sleep(2)
+
+    logger.log_event("wait_timeout", {"timeout": timeout})
+
+
 class AgentManager:
     """Manages the lifecycle of teammate agent processes."""
 
@@ -173,7 +208,6 @@ class AgentManager:
         config_dict = {
             "project_root": str(self.config.project_root),
             "workspace_dir": str(self.config.workspace_dir),
-            "session_dir": str(self.config.session_dir) if self.config.session_dir else None,
             "teams_dir": str(self.config.teams_dir),
             "tasks_dir": str(self.config.tasks_dir),
             "logs_dir": str(self.config.logs_dir),
@@ -185,7 +219,7 @@ class AgentManager:
             "base_url": self.config.base_url,
             "max_tokens": self.config.max_tokens,
             "max_turns": self.config.max_turns,
-            "max_agent_turns": definition.max_turns,
+            "max_agent_turns": definition.max_turns or self.config.max_agent_turns,
             "temperature": self.config.temperature,
         }
 
@@ -209,7 +243,7 @@ class AgentManager:
                 definition.agent_type,
                 self.team_name,
                 model,
-                definition.max_turns,
+                definition.max_turns or self.config.max_agent_turns,
                 task_description,
                 config_dict,
                 str(self.config.project_root),

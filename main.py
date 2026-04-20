@@ -9,7 +9,7 @@ import sys
 import signal
 from pathlib import Path
 
-from open_teams.config import load_and_init_config, OpenTeamsConfig, CONFIG_FILE_NAME
+from open_teams.config import load_and_init_config, OpenTeamsConfig, CONFIG_FILE_NAME, PACKAGE_DIR
 from open_teams.agents.leader import TeamLeader
 
 
@@ -181,11 +181,15 @@ def format_tasks(leader: TeamLeader) -> str:
 
 
 def main():
+    import sys as _sys
+    _sys.dont_write_bytecode = True
+    os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
+
     args = parse_args()
 
     # --init-config: generate default config and exit
     if args.init_config:
-        out_path = Path(args.config) if args.config else Path.cwd() / ".open_teams" / CONFIG_FILE_NAME
+        out_path = Path(args.config) if args.config else PACKAGE_DIR / CONFIG_FILE_NAME
         out_path.parent.mkdir(parents=True, exist_ok=True)
         if out_path.exists():
             print(f"Config file already exists: {out_path}")
@@ -226,7 +230,7 @@ def main():
     if not config.api_key:
         print("Error: No API key configured.")
         print("Set it via one of:")
-        print(f"  1. \"api_key\" in .open_teams/{CONFIG_FILE_NAME}")
+        print(f"  1. \"api_key\" in {PACKAGE_DIR / CONFIG_FILE_NAME}")
         print("  2. ANTHROPIC_API_KEY or OPENAI_API_KEY environment variable")
         print("  3. --api-key command-line flag")
         print()
