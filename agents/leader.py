@@ -145,8 +145,20 @@ class TeamLeader:
             "members": members,
         }
 
-    def wait_for_completion(self, timeout: float = 600, poll_interval: float = 5):
-        """Wait for all teammate agents to complete, with health monitoring."""
+    def wait_for_completion(
+        self,
+        timeout: float = 600,
+        poll_interval: float = 5,
+        progress_callback: Any = None,
+    ):
+        """Wait for all teammate agents to complete, with health monitoring.
+
+        Parameters
+        ----------
+        progress_callback:
+            Optional callable receiving a dict with keys ``elapsed``,
+            ``completed``, ``total``, ``active_agents`` every poll cycle.
+        """
         start = time.monotonic()
         seen_exited: set[str] = set()
 
@@ -171,6 +183,22 @@ class TeamLeader:
                 if "exited" in status and name not in seen_exited:
                     seen_exited.add(name)
                     self._recover_orphaned_tasks(name, status)
+
+            if progress_callback is not None:
+                try:
+                    tasks = self.task_board.list_tasks()
+                    total = len(tasks)
+                    completed = sum(1 for t in tasks if t["status"] == "completed")
+                    active = self.agent_manager.active_count
+                    elapsed = time.monotonic() - start
+                    progress_callback({
+                        "elapsed": elapsed,
+                        "completed": completed,
+                        "total": total,
+                        "active_agents": active,
+                    })
+                except Exception:
+                    pass
 
             time.sleep(poll_interval)
 
@@ -227,6 +255,73 @@ class TeamLeader:
             self.logger.log_error(
                 f"Error in _recover_orphaned_tasks for '{agent_name}': {exc}", {}
             )
+
+    def synthesize_results(self) -> str:
+        """Collect completion reports and wake Leader LLM for final synthesis."""
+        self.logger.log_event("synthesis_started")
+
+        messages = self.mailbox.read_inbox(self.agent_name, unread_only=True)
+        if messages:
+            self.mailbox.mark_as_read(self.agent_name, [m["id"] for m in messages])
+
+        tasks = self.task_board.list_tasks()
+        prompt = self._build_synthesis_prompt(tasks, messages)
+        self.context.add_user_message(prompt)
+
+        result = self.engine.run_loop()
+        self.logger.log_message("assistant", result)
+        self.logger.log_event("synthesis_completed")
+        return result
+
+    def _build_synthesis_prompt(self, tasks: list[dict], messages: list[dict]) -> str:
+        """Build the user-turn prompt that wakes Leader for final synthesis."""
+        parts: list[str] = [
+            "[SYSTEM] All teammate agents have completed their work. "
+            "Time for final synthesis.\n"
+        ]
+
+        completed = [t for t in tasks if t["status"] == "completed"]
+        in_prog = [t for t in tasks if t["status"] == "in_progress"]
+        blocked = [t for t in tasks if t["status"] == "blocked"]
+        pending = [t for t in tasks if t["status"] == "pending"]
+
+        parts.append(f"## Task Summary ({len(completed)}/{len(tasks)} completed)")
+        if completed:
+            for t in completed:
+                parts.append(f"  [DONE] #{t['id']} {t['subject']} (owner: {t.get('owner', '?')})")
+        if in_prog:
+            for t in in_prog:
+                parts.append(f"  [IN PROGRESS] #{t['id']} {t['subject']} (owner: {t.get('owner', '?')})")
+        if blocked:
+            for t in blocked:
+                parts.append(f"  [BLOCKED] #{t['id']} {t['subject']} (owner: {t.get('owner', '?')})")
+        if pending:
+            for t in pending:
+                parts.append(f"  [PENDING] #{t['id']} {t['subject']}")
+
+        if messages:
+            parts.append(f"\n## Completion Reports ({len(messages)} messages)")
+            for m in messages:
+                sender = m.get("from_agent", "unknown")
+                summary = m.get("summary", "")
+                content = m.get("content", "")[:500]
+                header = f"[From {sender}]"
+                if summary:
+                    header += f" ({summary})"
+                parts.append(f"\n{header}\n{content}")
+
+        parts.append(
+            "\n## Your Action\n"
+            "1. Read the key output files produced by the team using read_file.\n"
+            "2. Run any final validation if appropriate (e.g., shell to run tests).\n"
+            "3. Present a comprehensive final report to the user:\n"
+            "   - Summary of what was built\n"
+            "   - List of files created/modified\n"
+            "   - Test results if available\n"
+            "   - Known limitations or next steps"
+        )
+
+        return "\n".join(parts)
 
     def shutdown(self):
         """Gracefully shut down the team."""

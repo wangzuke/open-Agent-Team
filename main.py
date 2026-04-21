@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import atexit
 import json
 import os
 import sys
@@ -11,6 +12,15 @@ from pathlib import Path
 
 from open_teams.config import load_and_init_config, OpenTeamsConfig, CONFIG_FILE_NAME, PACKAGE_DIR
 from open_teams.agents.leader import TeamLeader
+
+
+def _print_progress(info: dict):
+    elapsed = int(info["elapsed"])
+    mm, ss = divmod(elapsed, 60)
+    completed = info["completed"]
+    total = info["total"]
+    active = info["active_agents"]
+    print(f"\r  [{mm:02d}:{ss:02d}] {completed}/{total} tasks completed | {active} agents running", end="", flush=True)
 
 
 def parse_args() -> argparse.Namespace:
@@ -238,6 +248,7 @@ def main():
         sys.exit(1)
 
     leader = TeamLeader(config, team_name=config.team_name)
+    atexit.register(leader.shutdown)
 
     def signal_handler(sig, frame):
         print("\nShutting down...")
@@ -249,8 +260,14 @@ def main():
     # Single-message mode
     if args.message:
         response = leader.handle_user_message(args.message)
-        print(response)
-        leader.wait_for_completion(timeout=600)
+        print(f"\nteam-lead> {response}\n")
+        if leader.agent_manager.active_count > 0:
+            print("[Team working...]\n")
+            leader.wait_for_completion(timeout=1800, progress_callback=_print_progress)
+            print()
+            print("\n[All agents completed. Synthesizing results...]\n")
+            synthesis = leader.synthesize_results()
+            print(f"\nteam-lead> {synthesis}\n")
         leader.shutdown()
         return
 
@@ -302,6 +319,22 @@ def main():
             else:
                 response = leader.handle_followup(user_input)
             print(f"\nteam-lead> {response}\n")
+
+            if leader.agent_manager.active_count > 0:
+                print("[Team working... Ctrl+C to return to prompt]\n")
+                old_handler = signal.getsignal(signal.SIGINT)
+                try:
+                    signal.signal(signal.SIGINT, signal.default_int_handler)
+                    leader.wait_for_completion(timeout=1800, progress_callback=_print_progress)
+                    print()
+                except KeyboardInterrupt:
+                    print("\n\n[Agents still running. Use /status to check, or type a message.]\n")
+                    signal.signal(signal.SIGINT, old_handler)
+                    continue
+                signal.signal(signal.SIGINT, old_handler)
+                print("\n[All agents completed. Synthesizing results...]\n")
+                synthesis = leader.synthesize_results()
+                print(f"\nteam-lead> {synthesis}\n")
         except Exception as e:
             print(f"\nError: {e}\n")
 

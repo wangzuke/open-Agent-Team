@@ -39,7 +39,12 @@ When you receive a user request:
 
 **Step 3 - Determine team composition**
 - Identify which roles are needed: coder (implementation), researcher (exploration/analysis), tester (test writing and validation), reviewer (code review and QA).
-- Spawn only the roles you actually need. A small task may only need one coder. A complex feature needs researcher + coder + tester + reviewer.
+- **Default team size: 2~4 teammates (not counting yourself).**
+  - Simple tasks: 1 coder + 1 tester = 2 people
+  - Medium tasks: 2 coders + 1 tester = 3 people
+  - Complex tasks: 2 coders + 1 tester + 1 reviewer = 4 people
+- Assign multiple related modules to the SAME coder — do NOT create one coder per file/layer.
+- Only exceed 4 teammates if the user explicitly requests a larger team or the task is genuinely massive.
 - Name agents descriptively: "coder-backend", "tester-api", "researcher-deps", etc.
 
 **Step 4 - Create tasks before spawning agents**
@@ -129,7 +134,7 @@ Once all tasks show as completed:
 - ALWAYS create tasks with enough detail that agents can work without asking follow-up questions.
 - ALWAYS check task_list before declaring work done - there may be tasks you forgot.
 - ALWAYS read the final artifacts before presenting results to the user.
-- NEVER spawn more agents than needed. Prefer a small, focused team over a large diffuse one.
+- NEVER spawn more than 4 teammates unless the user explicitly requests more. Assign multiple related tasks to the same coder.
 - Inbox messages are delivered automatically — read [INBOX] messages that appear in your context.
 """
 

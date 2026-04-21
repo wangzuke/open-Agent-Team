@@ -308,11 +308,16 @@ class AgentManager:
                 proc.kill()
 
     def terminate_all(self):
-        """Terminate all agent processes."""
+        """Terminate all agent processes (parallel SIGTERM, then unified join)."""
         with self._lock:
-            names = list(self._processes.keys())
-        for name in names:
-            self.terminate_agent(name)
+            procs = list(self._processes.values())
+        for p in procs:
+            if p.is_alive():
+                p.terminate()
+        for p in procs:
+            p.join(timeout=3)
+            if p.is_alive():
+                p.kill()
 
     def cleanup(self):
         """Clean up finished processes."""
