@@ -76,6 +76,7 @@ def _run_worker_process(
         model=model,
         config=config,
         working_dir=Path(working_dir),
+        max_turns=max_turns,
     )
 
     engine = QueryEngine(context, activity_logger=logger)
@@ -85,9 +86,9 @@ def _run_worker_process(
         f"in team '{team_name}'.\n\n"
         f"Your initial task description:\n{task_description}\n\n"
         "## How messages work\n"
-        "- Inbox messages are delivered to you AUTOMATICALLY via [INBOX] at the start of each turn.\n"
+        "- New inbox messages are delivered to you AUTOMATICALLY via [INBOX] at the start of a turn when they arrive.\n"
         "- When a dependency completes, you will receive a [TASK READY] message — that is your signal to start.\n"
-        "- You do NOT need to call check_inbox or task_list to discover work.\n\n"
+        "- You do NOT need to call task_list to discover work.\n\n"
         "## Workflow\n"
         "1. Read any [INBOX] or [TASK READY] messages to know what to work on.\n"
         "2. Call task_update(status='in_progress') before starting.\n"
@@ -220,7 +221,13 @@ class AgentManager:
             "max_tokens": self.config.max_tokens,
             "max_turns": self.config.max_turns,
             "max_agent_turns": definition.max_turns or self.config.max_agent_turns,
+            "max_retries": self.config.max_retries,
+            "max_context_tokens": self.config.max_context_tokens,
+            "token_budget": self.config.token_budget,
             "temperature": self.config.temperature,
+            "sandbox_enabled": self.config.sandbox_enabled,
+            "sandbox_allowed_dirs": [str(p) for p in self.config.sandbox_allowed_dirs],
+            "streaming": False,
         }
 
         from open_teams.coordination import TeamManager, Mailbox

@@ -92,9 +92,9 @@ class CheckInboxTool(Tool):
     def __init__(self):
         self.name = "check_inbox"
         self.description = (
-            "Check your inbox for unread messages from teammates or the team leader. "
-            "Returns all unread messages and marks them as read. "
-            "Call this at the start of each work cycle and after completing each task."
+            "Read the full content of unread inbox messages from teammates or the team leader. "
+            "This is a fallback/debug tool; the runtime normally delivers full inbox messages automatically via [INBOX]. "
+            "Returns unread messages and marks them as read."
         )
         self.input_schema = {
             "type": "object",

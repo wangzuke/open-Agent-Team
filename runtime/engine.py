@@ -43,6 +43,7 @@ class QueryEngine:
         logger: Any = None,
         activity_logger: Any = None,
         llm_client: LLMClient | None = None,
+        stream_callback: Any = None,
     ) -> None:
         self.context = context
         self.logger: logging.Logger = (
@@ -51,7 +52,9 @@ class QueryEngine:
         self.activity_logger = activity_logger or (
             logger if not isinstance(logger, logging.Logger) else None
         )
+        self.stream_callback = stream_callback
         self._inbox_queue: queue.Queue = queue.Queue()
+        self._queued_inbox_ids: set[str] = set()
         self._inbox_poller_started: bool = False
 
         if llm_client is not None:
@@ -61,13 +64,14 @@ class QueryEngine:
                 provider=context.config.provider,
                 api_key=context.config.api_key,
                 base_url=context.config.base_url,
+                max_retries=context.config.max_retries,
             )
 
     # ------------------------------------------------------------------
     # Single turn
     # ------------------------------------------------------------------
 
-    def run_turn(self) -> QueryResult:
+    def run_turn(self, stream_callback: Any = None) -> QueryResult:
         """Send the current message history to the LLM and parse the reply."""
         ctx = self.context
         try:
@@ -78,6 +82,8 @@ class QueryEngine:
                 tools=ctx.get_tool_schemas(),
                 max_tokens=ctx.config.max_tokens,
                 temperature=ctx.config.temperature,
+                stream=bool(ctx.config.streaming and (stream_callback or self.stream_callback)),
+                stream_handler=stream_callback or self.stream_callback,
             )
         except Exception as exc:
             self.logger.error("LLM API error: %s", exc)
@@ -175,7 +181,7 @@ class QueryEngine:
         t.start()
 
     def _inbox_poll_loop(self) -> None:
-        """Background thread: poll inbox every 1 s, push messages to queue."""
+        """Background thread: poll inbox every 1 s and queue unread messages."""
         ctx = self.context
         team_name = ctx.agent_identity.team_name
         agent_name = ctx.agent_identity.agent_name
@@ -186,55 +192,102 @@ class QueryEngine:
 
                 mailbox = Mailbox(ctx.config, team_name)
                 messages = mailbox.read_inbox(agent_name, unread_only=True)
-                if messages:
-                    msg_ids = [m["id"] for m in messages]
-                    mailbox.mark_as_read(agent_name, msg_ids)
-                    for m in messages:
+                fresh_messages = [
+                    m for m in messages if m.get("id") and m["id"] not in self._queued_inbox_ids
+                ]
+                if fresh_messages:
+                    for m in fresh_messages:
+                        self._queued_inbox_ids.add(m["id"])
                         self._inbox_queue.put(m)
                     if self.activity_logger:
                         self.activity_logger.log_event(
                             "inbox_polled",
-                            {"count": len(messages), "from": [m.get("from_agent") for m in messages]},
+                            {
+                                "count": len(fresh_messages),
+                                "from": [m.get("from_agent") for m in fresh_messages],
+                            },
                         )
             except Exception as exc:
                 self.logger.debug("_inbox_poll_loop error: %s", exc)
 
             ctx.abort_event.wait(1.0)
 
-    def _drain_inbox_queue(self) -> str | None:
-        """Drain all pending messages from the queue and return formatted text."""
+    def _drain_inbox_queue(self) -> list[dict]:
+        """Drain queued inbox messages for delivery at the next safe point."""
         messages: list[dict] = []
         while True:
             try:
                 messages.append(self._inbox_queue.get_nowait())
             except queue.Empty:
                 break
+        return messages
+
+    def _format_inbox_messages(self, messages: list[dict]) -> str:
+        """Format full inbox messages for persistent context injection."""
+        lines = [f"[INBOX]\nYou have {len(messages)} new message(s)."]
+        for index, message in enumerate(messages, start=1):
+            lines.append("")
+            lines.append(f"--- MESSAGE {index} ---")
+            lines.append(f"from: {message.get('from_agent', 'unknown')}")
+            lines.append(f"summary: {message.get('summary', '')}")
+            lines.append("content:")
+            lines.append(str(message.get("content", "")))
+        return "\n".join(lines)
+
+    def _mark_inbox_messages_read(self, messages: list[dict]) -> None:
+        """Mark delivered inbox messages as read and clear local queue tracking."""
         if not messages:
-            return None
+            return
+        agent_name = self.context.agent_identity.agent_name
+        team_name = self.context.agent_identity.team_name
+        message_ids = [m["id"] for m in messages if m.get("id")]
+        for message_id in message_ids:
+            self._queued_inbox_ids.discard(message_id)
+        if not team_name or not message_ids:
+            return
+        try:
+            from open_teams.coordination.mailbox import Mailbox
 
-        lines = [f"[INBOX] You have {len(messages)} new message(s):"]
-        for m in messages:
-            sender = m.get("from_agent", "unknown")
-            summary = m.get("summary", "")
-            content = m.get("content", "")
-            header = f"[From {sender}]"
-            if summary:
-                header += f" ({summary})"
-            lines.append(f"\n{header}\n{content}")
+            mailbox = Mailbox(self.context.config, team_name)
+            mailbox.mark_as_read(agent_name, message_ids)
+        except Exception as exc:
+            self.logger.debug("_mark_inbox_messages_read error: %s", exc)
 
+    def _requeue_inbox_messages(self, messages: list[dict]) -> None:
+        """Requeue inbox messages if a turn fails before they can be consumed."""
+        for message in reversed(messages):
+            message_id = message.get("id")
+            if message_id:
+                self._queued_inbox_ids.discard(message_id)
+            self._inbox_queue.put(message)
+
+    def _inject_inbox_messages(self) -> list[dict]:
+        """Inject queued inbox messages into persistent history."""
+        messages = self._drain_inbox_queue()
+        if not messages:
+            return []
+        self.context.add_user_message(self._format_inbox_messages(messages))
         if self.activity_logger:
             self.activity_logger.log_event(
                 "inbox_injected",
-                {"count": len(messages), "from": [m.get("from_agent") for m in messages]},
+                {
+                    "count": len(messages),
+                    "from": [m.get("from_agent") for m in messages],
+                    "ids": [m.get("id") for m in messages],
+                },
             )
-
-        return "\n".join(lines)
+        self._mark_inbox_messages_read(messages)
+        return messages
 
     # ------------------------------------------------------------------
     # Main agentic loop
     # ------------------------------------------------------------------
 
-    def run_loop(self, initial_message: str | None = None) -> str:
+    def run_loop(
+        self,
+        initial_message: str | list[dict[str, Any]] | None = None,
+        stream_callback: Any = None,
+    ) -> str:
         """Run the agent loop until the model stops or the turn limit is hit.
 
         1. Optionally prepends *initial_message* as a user turn.
@@ -245,7 +298,7 @@ class QueryEngine:
            calls, or until ``max_agent_turns`` is reached.
         """
         ctx = self.context
-        max_turns: int = ctx.config.max_agent_turns
+        max_turns: int = ctx.get_max_turns()
 
         self._start_inbox_poller()
 
@@ -254,6 +307,7 @@ class QueryEngine:
 
         last_text: str = ""
         warning_injected: bool = False
+        token_budget_exhausted: bool = False
 
         for turn_index in range(max_turns):
             if ctx.abort_event.is_set():
@@ -286,12 +340,36 @@ class QueryEngine:
                 max_turns,
             )
 
-            inbox_text = self._drain_inbox_queue()
-            if inbox_text:
-                ctx.add_user_message(inbox_text)
+            delivered_inbox_messages: list[dict] = []
+            try:
+                delivered_inbox_messages = self._inject_inbox_messages()
+            except Exception:
+                if delivered_inbox_messages:
+                    self._requeue_inbox_messages(delivered_inbox_messages)
+                raise
 
-            result = self.run_turn()
+            compressed = ctx.maybe_compress_history()
+            if compressed and self.activity_logger:
+                self.activity_logger.log_event(
+                    "context_compressed",
+                    {"estimated_tokens": ctx.estimate_token_count()},
+                )
+
+            input_token_estimate = ctx.estimate_token_count()
+            result = self.run_turn(stream_callback=stream_callback)
             last_text = result.text_output
+            usage = result.usage or {
+                "input_tokens": input_token_estimate,
+                "output_tokens": max(1, len(result.text_output) // 4)
+                + max(0, len(result.tool_calls) * 12),
+            }
+            delta = ctx.token_tracker.record(usage)
+            if self.activity_logger:
+                self.activity_logger.log_token_usage(
+                    model=ctx.model,
+                    usage=delta,
+                    totals=ctx.token_tracker.snapshot(),
+                )
 
             assistant_content: list[dict[str, Any]] = []
             if result.text_output:
@@ -320,6 +398,26 @@ class QueryEngine:
             if result.tool_calls:
                 tool_results = self.execute_tools(result.tool_calls)
                 ctx.add_tool_results(tool_results)
+
+            if ctx.token_tracker.over_budget:
+                warning = (
+                    f"[SYSTEM WARNING] Token budget exhausted for agent "
+                    f"'{ctx.agent_identity.agent_name}'. Total tokens: "
+                    f"{ctx.token_tracker.total_tokens}."
+                )
+                ctx.add_user_message(warning)
+                if self.activity_logger:
+                    self.activity_logger.log_event(
+                        "token_budget_exhausted",
+                        ctx.token_tracker.snapshot(),
+                    )
+                last_text = (last_text + "\n\n" + warning).strip()
+                token_budget_exhausted = True
+                break
+
+        if token_budget_exhausted:
+            self._handle_max_turns_exceeded()
+            return last_text
 
         self.logger.warning(
             "Agent '%s' reached max turns (%d) without a clean end_turn.",

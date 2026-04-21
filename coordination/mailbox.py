@@ -28,7 +28,7 @@ class Mailbox:
             "content":    str,
             "summary":    str,          # short human-readable summary
             "timestamp":  str,          # ISO-8601 UTC
-            "read":       bool          # False on arrival
+            "read":       bool          # False on arrival; True after delivery to agent context
         }
     """
 

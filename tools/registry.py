@@ -5,10 +5,11 @@ from __future__ import annotations
 from open_teams.config import OpenTeamsConfig
 from .base import ToolRegistry
 from .file_tools import ReadFileTool, WriteFileTool, EditFileTool
+from .git_tools import GitStatusTool, GitDiffTool, GitLogTool, GitCommitTool
 from .search_tools import GlobTool, GrepTool
 from .shell_tool import ShellTool
 from .agent_tool import SpawnAgentTool
-from .message_tool import SendMessageTool, CheckInboxTool
+from .message_tool import SendMessageTool
 from .task_tools import TaskCreateTool, TaskUpdateTool, TaskListTool, TaskGetTool
 
 
@@ -19,15 +20,14 @@ def create_leader_tools(
 ) -> ToolRegistry:
     """Build a ToolRegistry with the full leader tool set.
 
-    Includes: file I/O, search, shell, spawn_agent, send_message, check_inbox,
-    and all task tools.
+    Includes: file I/O, search, shell, spawn_agent, send_message, and all task tools.
     """
     registry = ToolRegistry()
 
     # File tools — resolve relative paths against project_root
     project_root = config.project_root
     for tool_cls in [ReadFileTool, WriteFileTool, EditFileTool]:
-        registry.register(tool_cls(project_root=project_root))
+        registry.register(tool_cls(project_root=project_root, config=config))
 
     # Search tools
     for tool_cls in [GlobTool, GrepTool]:
@@ -35,20 +35,19 @@ def create_leader_tools(
 
     # Shell
     shell = ShellTool()
-    shell.set_working_dir(str(config.project_root))
+    shell.set_working_dir(str(config.project_root), config=config)
     registry.register(shell)
+
+    for tool_cls in [GitStatusTool, GitDiffTool, GitLogTool, GitCommitTool]:
+        registry.register(tool_cls(config.project_root))
 
     # Agent spawning
     registry.register(SpawnAgentTool())
 
-    # Messaging — send + check inbox
+    # Messaging
     msg = SendMessageTool()
     msg.set_context(team_name, agent_name, config)
     registry.register(msg)
-
-    inbox = CheckInboxTool()
-    inbox.set_context(team_name, agent_name, config)
-    registry.register(inbox)
 
     # Task management
     for tool_cls in [TaskCreateTool, TaskListTool, TaskGetTool]:
@@ -70,7 +69,7 @@ def create_teammate_tools(
 ) -> ToolRegistry:
     """Build a ToolRegistry with the standard teammate tool set.
 
-    Includes: file I/O, search, shell, send_message, check_inbox, and all task tools.
+    Includes: file I/O, search, shell, send_message, and all task tools.
     Does NOT include spawn_agent or team_create (leader-only capabilities).
     """
     registry = ToolRegistry()
@@ -78,7 +77,7 @@ def create_teammate_tools(
     # File tools — resolve relative paths against project_root
     project_root = config.project_root
     for tool_cls in [ReadFileTool, WriteFileTool, EditFileTool]:
-        registry.register(tool_cls(project_root=project_root))
+        registry.register(tool_cls(project_root=project_root, config=config))
 
     # Search tools
     for tool_cls in [GlobTool, GrepTool]:
@@ -86,17 +85,16 @@ def create_teammate_tools(
 
     # Shell
     shell = ShellTool()
-    shell.set_working_dir(str(config.project_root))
+    shell.set_working_dir(str(config.project_root), config=config)
     registry.register(shell)
 
-    # Messaging — send + check inbox
+    for tool_cls in [GitStatusTool, GitDiffTool, GitLogTool, GitCommitTool]:
+        registry.register(tool_cls(config.project_root))
+
+    # Messaging
     msg = SendMessageTool()
     msg.set_context(team_name, agent_name, config)
     registry.register(msg)
-
-    inbox = CheckInboxTool()
-    inbox.set_context(team_name, agent_name, config)
-    registry.register(inbox)
 
     # Task management
     for tool_cls in [TaskCreateTool, TaskListTool, TaskGetTool]:

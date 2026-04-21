@@ -4,3 +4,4 @@
 # LLM providers (at least one is required)
 anthropic>=0.40.0        # Anthropic Claude API
 openai>=1.0.0            # OpenAI-compatible APIs (OpenAI, DeepSeek, Qwen, vLLM, etc.)
+pypdf>=4.0.0             # PDF text extraction for multimodal read_file

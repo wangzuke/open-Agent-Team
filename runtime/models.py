@@ -42,7 +42,7 @@ class ToolCall:
 @dataclass
 class ToolResult:
     tool_call_id: str
-    content: str = ""
+    content: Any = ""
     is_error: bool = False
 
     def to_api_format(self) -> dict[str, Any]:

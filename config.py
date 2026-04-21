@@ -21,6 +21,7 @@ class OpenTeamsConfig:
     tasks_dir: Path = field(default=None)
     logs_dir: Path = field(default=None)
     inboxes_dir: Path = field(default=None)
+    sandbox_allowed_dirs: list[Path] = field(default_factory=list)
 
     # LLM provider: "anthropic" or "openai" (covers any OpenAI-compatible API)
     provider: str = "anthropic"
@@ -32,7 +33,12 @@ class OpenTeamsConfig:
     max_tokens: int = 50000
     max_turns: int = 1000
     max_agent_turns: int = 200
+    max_retries: int = 3
+    max_context_tokens: int = 100000
+    token_budget: int = 0
     temperature: float = 0.0
+    sandbox_enabled: bool = True
+    streaming: bool = True
 
     team_name: str = "default"
 
@@ -55,6 +61,9 @@ class OpenTeamsConfig:
             self.inboxes_dir = self.workspace_dir / "inboxes"
         else:
             self.inboxes_dir = Path(self.inboxes_dir).resolve()
+        self.sandbox_allowed_dirs = [
+            Path(p).resolve() for p in (self.sandbox_allowed_dirs or [])
+        ]
 
     def ensure_dirs(self):
         dirs = [self.workspace_dir, self.teams_dir, self.tasks_dir, self.logs_dir, self.inboxes_dir]
@@ -89,7 +98,13 @@ class OpenTeamsConfig:
             "max_tokens": self.max_tokens,
             "max_turns": self.max_turns,
             "max_agent_turns": self.max_agent_turns,
+            "max_retries": self.max_retries,
+            "max_context_tokens": self.max_context_tokens,
+            "token_budget": self.token_budget,
             "temperature": self.temperature,
+            "sandbox_enabled": self.sandbox_enabled,
+            "sandbox_allowed_dirs": [str(p) for p in self.sandbox_allowed_dirs],
+            "streaming": self.streaming,
             "team_name": self.team_name,
             "project_root": str(self.project_root),
             "workspace_dir": str(self.workspace_dir),
@@ -124,6 +139,8 @@ class OpenTeamsConfig:
             field_obj = cls.__dataclass_fields__[k]
             if field_obj.type in ("Path", "Path | None") or k.endswith("_dir") or k == "project_root":
                 filtered[k] = Path(v) if v else None
+            elif k == "sandbox_allowed_dirs":
+                filtered[k] = [Path(p) for p in v]
             else:
                 filtered[k] = v
         return cls(**filtered)

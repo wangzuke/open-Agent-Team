@@ -71,6 +71,15 @@ class ActivityLogger:
             "data": data or {},
         })
 
+    def log_token_usage(self, model: str, usage: dict, totals: dict) -> None:
+        """Log token usage for a single LLM turn and cumulative totals."""
+        self._write_line({
+            "type": "token_usage",
+            "model": model,
+            "usage": usage,
+            "totals": totals,
+        })
+
     def log_error(self, error: str, context: dict | None = None) -> None:
         """Log an error with optional contextual metadata."""
         self._write_line({

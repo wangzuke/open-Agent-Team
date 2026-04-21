@@ -62,6 +62,7 @@ class TeamLeader:
             model=self.model,
             config=config,
             working_dir=config.project_root,
+            max_turns=config.max_turns,
         )
 
         self.engine = QueryEngine(self.context, activity_logger=self.logger)
@@ -112,18 +113,18 @@ class TeamLeader:
             "model": model,
         })
 
-    def handle_user_message(self, message: str) -> str:
+    def handle_user_message(self, message: str, stream_callback: Any = None) -> str:
         """Process a user message through the leader's query loop."""
         self.logger.log_message("user", message)
-        result = self.engine.run_loop(initial_message=message)
+        result = self.engine.run_loop(initial_message=message, stream_callback=stream_callback)
         self.logger.log_message("assistant", result)
         return result
 
-    def handle_followup(self, message: str) -> str:
+    def handle_followup(self, message: str, stream_callback: Any = None) -> str:
         """Handle follow-up messages in the ongoing conversation."""
         self.logger.log_message("user", message)
         self.context.add_user_message(message)
-        result = self.engine.run_loop()
+        result = self.engine.run_loop(stream_callback=stream_callback)
         self.logger.log_message("assistant", result)
         return result
 
@@ -161,6 +162,9 @@ class TeamLeader:
         """
         start = time.monotonic()
         seen_exited: set[str] = set()
+        seen_inbox_ids: set[str] = set()
+        stall_state: dict[str, dict[str, float | str]] = {}
+        stall_threshold = max(poll_interval * 4, 60.0)
 
         while time.monotonic() - start < timeout:
             if self.agent_manager.active_count == 0:
@@ -169,8 +173,12 @@ class TeamLeader:
             # Read inbox messages (log them for visibility)
             messages = self.mailbox.read_inbox(self.agent_name, unread_only=True)
             if messages:
-                self.mailbox.mark_as_read(self.agent_name)
                 for msg in messages:
+                    message_id = msg.get("id")
+                    if message_id in seen_inbox_ids:
+                        continue
+                    if message_id:
+                        seen_inbox_ids.add(message_id)
                     self.logger.log_event("inbox_message", {
                         "from": msg["from_agent"],
                         "summary": msg.get("summary", ""),
@@ -183,6 +191,8 @@ class TeamLeader:
                 if "exited" in status and name not in seen_exited:
                     seen_exited.add(name)
                     self._recover_orphaned_tasks(name, status)
+
+            self._nudge_stalled_tasks(stall_state, stall_threshold)
 
             if progress_callback is not None:
                 try:
@@ -208,6 +218,69 @@ class TeamLeader:
             if "exited" in status and name not in seen_exited:
                 seen_exited.add(name)
                 self._recover_orphaned_tasks(name, status)
+
+    def _nudge_stalled_tasks(
+        self,
+        stall_state: dict[str, dict[str, float | str]],
+        stall_threshold: float,
+    ) -> None:
+        """Detect long-idle in-progress tasks and send a status-check nudge."""
+        now = time.monotonic()
+        try:
+            in_progress = self.task_board.list_tasks(filter_status="in_progress")
+        except Exception:
+            return
+
+        active_ids = {task["id"] for task in in_progress}
+        for task_id in list(stall_state):
+            if task_id not in active_ids:
+                stall_state.pop(task_id, None)
+
+        for task in in_progress:
+            task_id = task["id"]
+            signature = "|".join(
+                [
+                    str(task.get("status", "")),
+                    str(task.get("owner", "")),
+                    str(task.get("updatedAt", "")),
+                ]
+            )
+            state = stall_state.get(task_id)
+            if state is None or state.get("signature") != signature:
+                stall_state[task_id] = {
+                    "signature": signature,
+                    "first_seen": now,
+                    "last_nudged": 0.0,
+                }
+                continue
+
+            first_seen = float(state.get("first_seen", now))
+            last_nudged = float(state.get("last_nudged", 0.0))
+            owner = task.get("owner") or ""
+            if (
+                owner
+                and now - first_seen >= stall_threshold
+                and now - last_nudged >= stall_threshold
+            ):
+                try:
+                    self.mailbox.send_message(
+                        from_agent=self.agent_name,
+                        to_agent=owner,
+                        summary=f"Status check for Task #{task_id}",
+                        content=(
+                            f"[STATUS CHECK] Task #{task_id} '{task.get('subject', '')}' "
+                            f"has shown no task-board progress for about {int(now - first_seen)} seconds.\n"
+                            "If you are done, call task_update(status='completed') immediately.\n"
+                            "If you are blocked, send_message to team-lead and mark the task blocked."
+                        ),
+                    )
+                    state["last_nudged"] = now
+                    self.logger.log_event(
+                        "task_stall_nudged",
+                        {"task_id": task_id, "owner": owner, "idle_seconds": int(now - first_seen)},
+                    )
+                except Exception:
+                    pass
 
     def _recover_orphaned_tasks(self, agent_name: str, exit_status: str):
         """Auto-mark in_progress tasks of a dead agent as blocked."""
@@ -256,7 +329,7 @@ class TeamLeader:
                 f"Error in _recover_orphaned_tasks for '{agent_name}': {exc}", {}
             )
 
-    def synthesize_results(self) -> str:
+    def synthesize_results(self, stream_callback: Any = None) -> str:
         """Collect completion reports and wake Leader LLM for final synthesis."""
         self.logger.log_event("synthesis_started")
 
@@ -268,7 +341,7 @@ class TeamLeader:
         prompt = self._build_synthesis_prompt(tasks, messages)
         self.context.add_user_message(prompt)
 
-        result = self.engine.run_loop()
+        result = self.engine.run_loop(stream_callback=stream_callback)
         self.logger.log_message("assistant", result)
         self.logger.log_event("synthesis_completed")
         return result

@@ -23,6 +23,10 @@ def _print_progress(info: dict):
     print(f"\r  [{mm:02d}:{ss:02d}] {completed}/{total} tasks completed | {active} agents running", end="", flush=True)
 
 
+def _stream_text(chunk: str):
+    print(chunk, end="", flush=True)
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="open-teams",
@@ -101,6 +105,28 @@ def parse_args() -> argparse.Namespace:
         help="Sampling temperature",
     )
     parser.add_argument(
+        "--no-sandbox",
+        action="store_true",
+        help="Disable sandbox validation for file and shell tools.",
+    )
+    parser.add_argument(
+        "--no-stream",
+        action="store_true",
+        help="Disable streaming output for leader responses.",
+    )
+    parser.add_argument(
+        "--token-budget",
+        type=int,
+        default=None,
+        help="Maximum cumulative token budget before a run is stopped.",
+    )
+    parser.add_argument(
+        "--max-retries",
+        type=int,
+        default=None,
+        help="Maximum retry attempts for retryable LLM API errors.",
+    )
+    parser.add_argument(
         "-m", "--message",
         type=str,
         default=None,
@@ -120,7 +146,13 @@ def generate_default_config(path: Path):
         "max_tokens": 16384,
         "max_turns": 200,
         "max_agent_turns": 50,
+        "max_retries": 3,
+        "max_context_tokens": 100000,
+        "token_budget": 0,
         "temperature": 0.0,
+        "sandbox_enabled": True,
+        "sandbox_allowed_dirs": [],
+        "streaming": True,
         "team_name": "default",
         "project_root": ".",
     }
@@ -230,6 +262,14 @@ def main():
         cli_overrides["max_agent_turns"] = args.max_agent_turns
     if args.temperature is not None:
         cli_overrides["temperature"] = args.temperature
+    if args.no_sandbox:
+        cli_overrides["sandbox_enabled"] = False
+    if args.no_stream:
+        cli_overrides["streaming"] = False
+    if args.token_budget is not None:
+        cli_overrides["token_budget"] = args.token_budget
+    if args.max_retries is not None:
+        cli_overrides["max_retries"] = args.max_retries
 
     # Load config: config file -> env vars -> CLI args (highest priority)
     config = load_and_init_config(
@@ -259,15 +299,25 @@ def main():
 
     # Single-message mode
     if args.message:
-        response = leader.handle_user_message(args.message)
-        print(f"\nteam-lead> {response}\n")
+        if config.streaming:
+            print("\nteam-lead> ", end="", flush=True)
+            response = leader.handle_user_message(args.message, stream_callback=_stream_text)
+            print("\n")
+        else:
+            response = leader.handle_user_message(args.message)
+            print(f"\nteam-lead> {response}\n")
         if leader.agent_manager.active_count > 0:
             print("[Team working...]\n")
             leader.wait_for_completion(timeout=1800, progress_callback=_print_progress)
             print()
             print("\n[All agents completed. Synthesizing results...]\n")
-            synthesis = leader.synthesize_results()
-            print(f"\nteam-lead> {synthesis}\n")
+            if config.streaming:
+                print("team-lead> ", end="", flush=True)
+                synthesis = leader.synthesize_results(stream_callback=_stream_text)
+                print("\n")
+            else:
+                synthesis = leader.synthesize_results()
+                print(f"\nteam-lead> {synthesis}\n")
         leader.shutdown()
         return
 
@@ -314,11 +364,26 @@ def main():
 
         try:
             if first_message:
-                response = leader.handle_user_message(user_input)
+                if config.streaming:
+                    print("\nteam-lead> ", end="", flush=True)
+                    response = leader.handle_user_message(
+                        user_input, stream_callback=_stream_text
+                    )
+                    print("\n")
+                else:
+                    response = leader.handle_user_message(user_input)
+                    print(f"\nteam-lead> {response}\n")
                 first_message = False
             else:
-                response = leader.handle_followup(user_input)
-            print(f"\nteam-lead> {response}\n")
+                if config.streaming:
+                    print("\nteam-lead> ", end="", flush=True)
+                    response = leader.handle_followup(
+                        user_input, stream_callback=_stream_text
+                    )
+                    print("\n")
+                else:
+                    response = leader.handle_followup(user_input)
+                    print(f"\nteam-lead> {response}\n")
 
             if leader.agent_manager.active_count > 0:
                 print("[Team working... Ctrl+C to return to prompt]\n")
@@ -333,8 +398,13 @@ def main():
                     continue
                 signal.signal(signal.SIGINT, old_handler)
                 print("\n[All agents completed. Synthesizing results...]\n")
-                synthesis = leader.synthesize_results()
-                print(f"\nteam-lead> {synthesis}\n")
+                if config.streaming:
+                    print("team-lead> ", end="", flush=True)
+                    synthesis = leader.synthesize_results(stream_callback=_stream_text)
+                    print("\n")
+                else:
+                    synthesis = leader.synthesize_results()
+                    print(f"\nteam-lead> {synthesis}\n")
         except Exception as e:
             print(f"\nError: {e}\n")
 

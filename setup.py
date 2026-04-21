@@ -11,6 +11,7 @@ setup(
     install_requires=[
         "anthropic>=0.40.0",
         "openai>=1.0.0",
+        "pypdf>=4.0.0",
     ],
     entry_points={
         "console_scripts": [

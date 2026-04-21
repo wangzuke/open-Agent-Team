@@ -16,9 +16,8 @@ BASE_SYSTEM_PROMPT = """You are an AI agent in the open-teams multi-agent collab
 - If you encounter a blocker, report it to the team leader via send_message.
 
 ## Communication
-- The system automatically delivers inbox messages to you via [INBOX] at the start of each turn.
+- The system delivers newly-arrived inbox messages to you via [INBOX] at the start of a turn.
 - Use send_message to send messages to teammates and the team leader.
-- You do NOT need to call check_inbox — messages are delivered automatically.
 - Be concise but informative in your messages.
 - Report completion of each task immediately, not just at the end of all work.
 
@@ -47,7 +46,7 @@ TOOL_USAGE_INSTRUCTIONS = """
 - Use shell for running commands: tests, builds, git operations, package installs.
 - Use task_get to check task details. Use task_update to report progress.
 - Use send_message to communicate with teammates. This is CRITICAL after completing each task.
-- The system automatically delivers inbox messages via [INBOX] — you do not need to call check_inbox.
+- The system automatically delivers inbox messages via [INBOX].
 - task_list is available for orientation, but the system notifies you via [TASK READY] when tasks are ready.
 - Prefer specific tools over shell commands when a dedicated tool exists.
 - File paths: use paths relative to the project working directory shown in your environment info.
@@ -57,7 +56,7 @@ COLLABORATION_INSTRUCTIONS = """
 ## Collaboration Protocol
 
 This system is **message-driven**. You receive work assignments via automatic notifications:
-- **[INBOX]** messages are delivered at the start of each turn — no need to call check_inbox.
+- **[INBOX]** messages appear only when new messages arrive, and they include the full message body.
 - **[TASK READY]** messages tell you when a blocked task becomes available.
 
 ## Workflow

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from typing import Any, Optional, TYPE_CHECKING
 
 from .base import Tool
@@ -245,6 +247,7 @@ class TaskListTool(Tool):
         self._team_name: Optional[str] = None
         self._config: Optional["OpenTeamsConfig"] = None
         self._board: Optional["TaskBoard"] = None
+        self._last_fingerprint: str = ""
 
     def set_context(self, team_name: str, config: "OpenTeamsConfig") -> None:
         self._team_name = team_name
@@ -273,11 +276,48 @@ class TaskListTool(Tool):
         if not tasks:
             return "No tasks found on the task board."
 
+        fingerprint = self._fingerprint(tasks)
+        counts = self._counts(tasks)
+        counts_line = (
+            f"Counts: pending={counts['pending']}, in_progress={counts['in_progress']}, "
+            f"completed={counts['completed']}, blocked={counts['blocked']}"
+        )
+        if fingerprint == self._last_fingerprint:
+            return (
+                "No task-board changes since your last task_list call.\n"
+                f"{counts_line}\n"
+                "Avoid polling task_list repeatedly. Wait for inbox updates or inspect a specific task with task_get."
+            )
+
         lines = [f"Task Board ({len(tasks)} task(s)):"]
         lines.append("-" * 70)
+        lines.append(counts_line)
         for task in tasks:
             lines.append(_format_task_summary(task))
+        self._last_fingerprint = fingerprint
         return "\n".join(lines)
+
+    def _counts(self, tasks: list[dict]) -> dict[str, int]:
+        return {
+            "pending": sum(1 for task in tasks if task.get("status") == "pending"),
+            "in_progress": sum(1 for task in tasks if task.get("status") == "in_progress"),
+            "completed": sum(1 for task in tasks if task.get("status") == "completed"),
+            "blocked": sum(1 for task in tasks if task.get("status") == "blocked"),
+        }
+
+    def _fingerprint(self, tasks: list[dict]) -> str:
+        normalized = [
+            {
+                "id": task.get("id"),
+                "status": task.get("status"),
+                "owner": task.get("owner"),
+                "blockedBy": task.get("blockedBy", []),
+                "updatedAt": task.get("updatedAt"),
+            }
+            for task in tasks
+        ]
+        payload = json.dumps(normalized, ensure_ascii=False, sort_keys=True)
+        return hashlib.sha1(payload.encode("utf-8")).hexdigest()
 
 
 class TaskGetTool(Tool):

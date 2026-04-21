@@ -8,6 +8,18 @@ from typing import Any
 
 from .base import Tool
 
+_IGNORED_DIR_NAMES = {
+    ".git",
+    ".open_teams",
+    ".pytest_cache",
+    "__pycache__",
+    "node_modules",
+}
+
+
+def _is_ignored_path(path: Path) -> bool:
+    return any(part in _IGNORED_DIR_NAMES for part in path.parts)
+
 
 class GlobTool(Tool):
     def __init__(self):
@@ -58,7 +70,7 @@ class GlobTool(Tool):
 
         # Filter to files only, sort, and cap at 200
         file_matches = sorted(
-            [str(m) for m in matches if m.is_file()],
+            [str(m) for m in matches if m.is_file() and not _is_ignored_path(m)],
             key=lambda p: p.lower(),
         )[:200]
 
@@ -169,7 +181,10 @@ def _walk(root: Path):
         entries = list(root.iterdir())
     except PermissionError:
         return
-    dirnames = [e for e in entries if e.is_dir() and not e.name.startswith(".")]
+    dirnames = [
+        e for e in entries
+        if e.is_dir() and not e.name.startswith(".") and e.name not in _IGNORED_DIR_NAMES
+    ]
     filenames = [e.name for e in entries if e.is_file()]
     yield root, [d.name for d in dirnames], filenames
     for d in dirnames:

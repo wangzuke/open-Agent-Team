@@ -6,6 +6,9 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+from open_teams.config import OpenTeamsConfig
+from open_teams.utils.security import SandboxViolation, validate_shell_command
+
 from .base import Tool
 
 
@@ -32,10 +35,12 @@ class ShellTool(Tool):
             "required": ["command"],
         }
         self._working_dir: str | None = None
+        self._config: OpenTeamsConfig | None = None
 
-    def set_working_dir(self, path: str) -> None:
+    def set_working_dir(self, path: str, config: OpenTeamsConfig | None = None) -> None:
         """Set the working directory for shell command execution."""
         self._working_dir = path
+        self._config = config
 
     def execute(self, params: dict[str, Any]) -> str:
         command: str = params["command"]
@@ -49,6 +54,8 @@ class ShellTool(Tool):
             working_dir = str(wd_path)
 
         try:
+            if self._config is not None:
+                validate_shell_command(command, self._config, working_dir=working_dir)
             proc = subprocess.run(
                 command,
                 shell=True,
@@ -59,6 +66,8 @@ class ShellTool(Tool):
                 timeout=timeout,
                 cwd=working_dir,
             )
+        except SandboxViolation as exc:
+            return f"Sandbox error: {exc}"
         except subprocess.TimeoutExpired:
             return f"Error: Command timed out after {timeout} seconds: {command}"
         except OSError as exc:

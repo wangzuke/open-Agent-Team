@@ -316,7 +316,6 @@ Coder-A ──邮箱──→ Team Leader ──邮箱──→ Coder-B
 | `shell` | 执行 Shell 命令 |
 | `spawn_agent` | **派生新的 Teammate Agent (Leader专属)** 
 | `send_message` | 向其他 Agent 发送消息 |
-| `check_inbox` | 读取收件箱中的未读消息 |
 | `task_create` | 创建任务 |
 | `task_update` | 更新任务状态/分配（完成时自动通知下游） |
 | `task_list` | 列出所有任务 |
