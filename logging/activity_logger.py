@@ -45,15 +45,22 @@ class ActivityLogger:
         params: dict,
         result: str,
         duration_ms: float = 0,
+        *,
+        status: str = "ok",
+        tool_call_id: int = 0,
     ) -> None:
         """Log a single tool invocation with its parameters and result."""
-        self._write_line({
+        payload = {
             "type": "tool_call",
             "tool": tool_name,
+            "status": status,
             "params": params,
             "result": self._truncate(result),
             "duration_ms": duration_ms,
-        })
+        }
+        if tool_call_id:
+            payload["tool_call_id"] = tool_call_id
+        self._write_line(payload)
 
     def log_message(self, role: str, content: str) -> None:
         """Log an LLM conversation message (role = 'user' | 'assistant' | etc.)."""

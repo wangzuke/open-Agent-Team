@@ -23,6 +23,7 @@ def _run_worker_process(
     model: str,
     max_turns: int,
     task_description: str,
+    spawn_spec: dict[str, Any],
     config_dict: dict[str, Any],
     working_dir: str,
 ):
@@ -48,7 +49,15 @@ def _run_worker_process(
     logger.log_event("agent_started", {
         "agent_type": agent_type,
         "model": model,
+        "mission": spawn_spec.get("mission", ""),
+        "task_ids": spawn_spec.get("task_ids", []),
         "task_description": task_description,
+        "owned_paths": spawn_spec.get("owned_paths", []),
+        "required_reads": spawn_spec.get("required_reads", []),
+        "deliverables": spawn_spec.get("deliverables", []),
+        "definition_of_done": spawn_spec.get("definition_of_done", []),
+        "coordination_notes": spawn_spec.get("coordination_notes", []),
+        "startup_checklist": spawn_spec.get("startup_checklist", []),
     })
 
     registry = create_teammate_tools(config, team_name, agent_name)
@@ -81,21 +90,12 @@ def _run_worker_process(
 
     engine = QueryEngine(context, activity_logger=logger)
 
-    initial_msg = (
-        f"You have been spawned as teammate '{agent_name}' (type: {agent_type}) "
-        f"in team '{team_name}'.\n\n"
-        f"Your initial task description:\n{task_description}\n\n"
-        "## How messages work\n"
-        "- New inbox messages are delivered to you AUTOMATICALLY via [INBOX] at the start of a turn when they arrive.\n"
-        "- When a dependency completes, you will receive a [TASK READY] message — that is your signal to start.\n"
-        "- You do NOT need to call task_list to discover work.\n\n"
-        "## Workflow\n"
-        "1. Read any [INBOX] or [TASK READY] messages to know what to work on.\n"
-        "2. Call task_update(status='in_progress') before starting.\n"
-        "3. Complete the work using your tools.\n"
-        "4. Call task_update(status='completed') IMMEDIATELY when done.\n"
-        "5. Call send_message to team-lead with a completion report.\n"
-        "6. If you have more tasks, go to step 2. Otherwise your work is done."
+    initial_msg = _build_initial_teammate_message(
+        agent_name=agent_name,
+        agent_type=agent_type,
+        team_name=team_name,
+        task_description=task_description,
+        spawn_spec=spawn_spec,
     )
 
     _wait_for_actionable_task(config, team_name, agent_name, logger)
@@ -166,7 +166,7 @@ def _wait_for_actionable_task(
     team_name: str,
     agent_name: str,
     logger,
-    timeout: float = 600,
+    poll_interval: float = 2.0,
 ) -> None:
     """Block (zero LLM cost) until the agent has at least one non-blocked task."""
     from open_teams.coordination.task_board import TaskBoard
@@ -174,7 +174,7 @@ def _wait_for_actionable_task(
     board = TaskBoard(config, team_name)
     start = time.monotonic()
 
-    while time.monotonic() - start < timeout:
+    while True:
         try:
             tasks = board.list_tasks(filter_owner=agent_name)
             for t in tasks:
@@ -183,9 +183,79 @@ def _wait_for_actionable_task(
                     return
         except Exception:
             pass
-        time.sleep(2)
+        time.sleep(poll_interval)
 
-    logger.log_event("wait_timeout", {"timeout": timeout})
+
+def _format_bullets(title: str, items: list[str]) -> list[str]:
+    if not items:
+        return []
+    lines = [title]
+    for item in items:
+        lines.append(f"- {item}")
+    lines.append("")
+    return lines
+
+
+def _build_initial_teammate_message(
+    agent_name: str,
+    agent_type: str,
+    team_name: str,
+    task_description: str,
+    spawn_spec: dict[str, Any],
+) -> str:
+    mission = spawn_spec.get("mission", "").strip()
+    task_ids = spawn_spec.get("task_ids") or []
+    owned_paths = spawn_spec.get("owned_paths") or []
+    required_reads = spawn_spec.get("required_reads") or []
+    deliverables = spawn_spec.get("deliverables") or []
+    definition_of_done = spawn_spec.get("definition_of_done") or []
+    quality_bar = spawn_spec.get("quality_bar") or []
+    coordination_notes = spawn_spec.get("coordination_notes") or []
+    startup_checklist = spawn_spec.get("startup_checklist") or []
+    completion_report_template = spawn_spec.get("completion_report_template", "").strip()
+    architect_execution_rules = [
+        "## Architect Execution Rules",
+        "- Your job is to unblock downstream implementation quickly with the minimum complete contract package.",
+        "- Prefer concise documents with bullets, tables, route lists, schemas, and short examples.",
+        "- Avoid long narrative prose, repeated explanations across files, and speculative future architecture.",
+        "- Only create multiple contract docs when each one has a distinct purpose for downstream teammates.",
+        "- Keep project-structure guidance limited to the files and directories that this project is likely to build now.",
+        "",
+    ] if agent_type == "architect" else []
+
+    lines = [
+        f"You have been spawned as teammate '{agent_name}' (type: {agent_type}) in team '{team_name}'.",
+        "",
+        "Treat the instructions below as your operating brief. Follow them literally unless the codebase proves they are impossible or incorrect.",
+        "",
+    ]
+    if mission:
+        lines.extend(["## Mission", mission, ""])
+    if task_ids:
+        lines.extend(["## Assigned Task IDs", ", ".join(task_ids), ""])
+    if task_description:
+        lines.extend(["## Task Context", task_description, ""])
+    lines.extend(_format_bullets("## Owned Write Scope", owned_paths))
+    lines.extend(_format_bullets("## Required Reads Before Acting", required_reads))
+    lines.extend(_format_bullets("## Expected Deliverables", deliverables))
+    lines.extend(_format_bullets("## Definition of Done", definition_of_done))
+    lines.extend(_format_bullets("## Quality Bar", quality_bar))
+    lines.extend(_format_bullets("## Coordination Notes", coordination_notes))
+    lines.extend(_format_bullets("## Startup Checklist", startup_checklist))
+    lines.extend(architect_execution_rules)
+    if completion_report_template:
+        lines.extend(["## Completion Report Template", completion_report_template, ""])
+    lines.extend([
+        "## Working Rules",
+        "- New inbox messages are delivered to you automatically via [INBOX] when they arrive.",
+        "- When a dependency completes, you will receive a [TASK READY] message. That is your signal to begin the dependent task.",
+        "- Call task_get for the task IDs above before making implementation decisions if any detail is unclear.",
+        "- Call task_update(status='in_progress') before you start changing files.",
+        "- Call task_update(status='completed') immediately after your acceptance criteria are satisfied.",
+        "- Send a completion report to team-lead that names the files changed, validation run, and any remaining risk.",
+        "- If a contract, interface, or dependency is unclear, send_message to team-lead immediately instead of guessing.",
+    ])
+    return "\n".join(lines)
 
 
 class AgentManager:
@@ -201,6 +271,7 @@ class AgentManager:
         self,
         definition: AgentDefinition,
         task_description: str = "",
+        spawn_spec: dict[str, Any] | None = None,
     ) -> str:
         """Spawn a new teammate agent in a separate process. Returns agent name."""
         name = definition.name
@@ -252,6 +323,7 @@ class AgentManager:
                 model,
                 definition.max_turns or self.config.max_agent_turns,
                 task_description,
+                spawn_spec or {},
                 config_dict,
                 str(self.config.project_root),
             ),

@@ -13,6 +13,52 @@ if TYPE_CHECKING:
     from open_teams.coordination.task_board import TaskBoard
 
 
+def _format_list_block(label: str, values: list[str]) -> list[str]:
+    if not values:
+        return []
+    lines = [f"{label}:"]
+    for value in values:
+        lines.append(f"  - {value}")
+    return lines
+
+
+def _compose_task_description(
+    description: str,
+    goal: str,
+    scope: list[str],
+    deliverables: list[str],
+    acceptance: list[str],
+    constraints: list[str],
+    interfaces: list[str],
+    handoff: str,
+) -> str:
+    lines: list[str] = []
+    if goal:
+        lines.extend(["Goal:", goal, ""])
+    if description:
+        lines.extend(["Context:", description, ""])
+    if scope:
+        lines.extend(_format_list_block("Scope", scope))
+        lines.append("")
+    if deliverables:
+        lines.extend(_format_list_block("Deliverables", deliverables))
+        lines.append("")
+    if acceptance:
+        lines.extend(_format_list_block("Acceptance Criteria", acceptance))
+        lines.append("")
+    if constraints:
+        lines.extend(_format_list_block("Constraints", constraints))
+        lines.append("")
+    if interfaces:
+        lines.extend(_format_list_block("Contracts / Interfaces", interfaces))
+        lines.append("")
+    if handoff:
+        lines.extend(["Handoff:", handoff, ""])
+    while lines and lines[-1] == "":
+        lines.pop()
+    return "\n".join(lines)
+
+
 def _format_task(task: dict) -> str:
     """Return a human-readable string for a single task dict."""
     lines = [
@@ -20,6 +66,8 @@ def _format_task(task: dict) -> str:
         f"Subject:     {task.get('subject', '')}",
         f"Status:      {task.get('status', '')}",
         f"Owner:       {task.get('owner') or '(unassigned)'}",
+        f"Agent Type:  {task.get('agentType', '') or '(unspecified)'}",
+        f"Priority:    {task.get('priority', '') or '(unspecified)'}",
         f"Description: {task.get('description', '')}",
         f"Blocks:      {', '.join(task.get('blocks', [])) or 'none'}",
         f"BlockedBy:   {', '.join(task.get('blockedBy', [])) or 'none'}",
@@ -33,9 +81,12 @@ def _format_task_summary(task: dict) -> str:
     """Return a compact one-line summary for task list display."""
     owner = task.get("owner") or "(unassigned)"
     blocked = ", ".join(task.get("blockedBy", [])) or "none"
+    priority = task.get("priority") or "-"
+    agent_type = task.get("agentType") or "-"
     return (
         f"[{task.get('id', '?')}] {task.get('status', '?'):10s} "
-        f"owner={owner:15s} blockedBy={blocked}  {task.get('subject', '')}"
+        f"owner={owner:15s} role={agent_type:10s} pri={priority:8s} "
+        f"blockedBy={blocked}  {task.get('subject', '')}"
     )
 
 
@@ -43,31 +94,78 @@ class TaskCreateTool(Tool):
     def __init__(self):
         self.name = "task_create"
         self.description = (
-            "Create a new task on the team task board. "
-            "Returns the created task with its assigned ID."
+            "Create a new task on the team task board. Use this when you want a teammate or your future self to have "
+            "a clear, inspectable work item. Prefer the structured fields (goal, scope, deliverables, acceptance, "
+            "constraints, interfaces, handoff) so the task is specific instead of vague. Returns the created task "
+            "including its canonical numeric task ID, such as '1' or '2'."
         )
         self.input_schema = {
             "type": "object",
             "properties": {
                 "subject": {
                     "type": "string",
-                    "description": "Short title/subject for the task.",
+                    "description": "Short task title. Keep it specific enough that task_list remains readable.",
                 },
                 "description": {
                     "type": "string",
-                    "description": "Full description of what needs to be done.",
+                    "description": (
+                        "Task context. Explain the current state, why this task exists, relevant files, and any "
+                        "important background. This is the narrative part of the brief. If you omit it, still provide "
+                        "at least a precise goal and acceptance criteria."
+                    ),
                 },
                 "owner": {
                     "type": "string",
-                    "description": "Agent name to assign the task to. Leave empty for unassigned.",
+                    "description": "Agent name to assign immediately, for example 'coder-backend'. Leave empty to keep the task unassigned.",
+                },
+                "agent_type": {
+                    "type": "string",
+                    "description": "Recommended role for this task, such as coder, researcher, tester, reviewer, or architect.",
+                },
+                "priority": {
+                    "type": "string",
+                    "description": "Priority hint such as critical, high, medium, or low. Use this to help scheduling, not as a status.",
+                },
+                "goal": {
+                    "type": "string",
+                    "description": "One-sentence statement of the concrete outcome this task must achieve. This should read like the finish line.",
+                },
+                "scope": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Files, directories, or modules this task is allowed or expected to touch. Use repo-relative paths when possible.",
+                },
+                "deliverables": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Concrete outputs that must exist when the task is done, for example files, docs, or tests.",
+                },
+                "acceptance": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Specific completion checks the assignee must satisfy before marking the task completed.",
+                },
+                "constraints": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Non-negotiable rules, conventions, forbidden actions, or technology constraints for this task.",
+                },
+                "interfaces": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Contract details that must stay aligned with other teammates, such as API routes, request/response shapes, shared types, or schema names.",
+                },
+                "handoff": {
+                    "type": "string",
+                    "description": "What to report when done, where to hand off, and which downstream teammate or task depends on this work.",
                 },
                 "blockedBy": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "List of task IDs that must be completed before this task.",
+                    "description": "List of prerequisite task IDs. Prefer canonical numeric task IDs like '1' or '2', not labels like 'task-1'.",
                 },
             },
-            "required": ["subject", "description"],
+            "required": ["subject"],
         }
         self._team_name: Optional[str] = None
         self._config: Optional["OpenTeamsConfig"] = None
@@ -90,17 +188,49 @@ class TaskCreateTool(Tool):
 
     def execute(self, params: dict[str, Any]) -> str:
         subject: str = params["subject"]
-        description: str = params["description"]
+        description: str = params.get("description", "")
         owner: Optional[str] = params.get("owner") or None
         blocked_by: list[str] = params.get("blockedBy") or []
+        agent_type: Optional[str] = params.get("agent_type") or None
+        priority: Optional[str] = params.get("priority") or None
+        goal: str = params.get("goal", "").strip()
+        scope: list[str] = params.get("scope") or []
+        deliverables: list[str] = params.get("deliverables") or []
+        acceptance: list[str] = params.get("acceptance") or []
+        constraints: list[str] = params.get("constraints") or []
+        interfaces: list[str] = params.get("interfaces") or []
+        handoff: str = params.get("handoff", "").strip()
+
+        if not description and not goal:
+            return "Error: task_create requires either description or goal."
+
+        final_description = _compose_task_description(
+            description=description.strip(),
+            goal=goal,
+            scope=scope,
+            deliverables=deliverables,
+            acceptance=acceptance,
+            constraints=constraints,
+            interfaces=interfaces,
+            handoff=handoff,
+        )
 
         try:
             board = self._get_board()
             task = board.create_task(
                 subject=subject,
-                description=description,
+                description=final_description,
                 owner=owner,
                 blockedBy=blocked_by,
+                agent_type=agent_type,
+                priority=priority,
+                goal=goal or None,
+                scope=scope,
+                deliverables=deliverables,
+                acceptance=acceptance,
+                constraints=constraints,
+                interfaces=interfaces,
+                handoff=handoff or None,
             )
             return f"Task created successfully:\n{_format_task(task)}"
         except RuntimeError as exc:
@@ -113,41 +243,41 @@ class TaskUpdateTool(Tool):
     def __init__(self):
         self.name = "task_update"
         self.description = (
-            "Update an existing task on the team task board. "
-            "Specify only the fields you want to change. "
-            "Use addBlocks/addBlockedBy to append to dependency lists."
+            "Update an existing task on the team task board. Use this to change status, owner, description, or add "
+            "dependencies. Only include the fields you want to change. Use addBlocks/addBlockedBy to append to "
+            "dependency lists instead of rewriting them manually."
         )
         self.input_schema = {
             "type": "object",
             "properties": {
                 "task_id": {
                     "type": "string",
-                    "description": "The ID of the task to update.",
+                    "description": "Task ID to update. Prefer the canonical numeric ID string, for example '1'.",
                 },
                 "status": {
                     "type": "string",
                     "description": (
-                        "New status for the task. "
-                        "Common values: pending, in_progress, completed, blocked."
+                        "New task status. Common values are pending, in_progress, completed, and blocked. "
+                        "Set in_progress when starting real work and completed immediately after acceptance criteria are satisfied."
                     ),
                 },
                 "owner": {
                     "type": "string",
-                    "description": "New owner (agent name) to assign to the task.",
+                    "description": "New owner agent name, for example 'coder-backend'. Use this when explicitly assigning or reassigning work.",
                 },
                 "description": {
                     "type": "string",
-                    "description": "Updated description for the task.",
+                    "description": "Replacement task description. Use this only when the task brief itself needs correction or clarification.",
                 },
                 "addBlocks": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Task IDs to append to this task's 'blocks' list.",
+                    "description": "Task IDs to append to this task's blocks list. Prefer canonical numeric IDs like '2' and '3'.",
                 },
                 "addBlockedBy": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Task IDs to append to this task's 'blockedBy' list.",
+                    "description": "Task IDs to append to this task's blockedBy list. Use this when the task cannot start until those prerequisite tasks complete.",
                 },
             },
             "required": ["task_id"],
@@ -216,12 +346,22 @@ class TaskUpdateTool(Tool):
                 owner = task.get("owner")
                 if not owner:
                     continue
+                interface_notes = task.get("interfaces", []) or []
+                handoff = task.get("handoff", "")
+                extra_lines: list[str] = []
+                if interface_notes:
+                    extra_lines.append("Key contracts / interfaces:")
+                    extra_lines.extend(f"- {note}" for note in interface_notes[:5])
+                if handoff:
+                    extra_lines.append(f"Handoff expectation: {handoff}")
                 content = (
                     f"[TASK READY] Task #{task['id']} '{task.get('subject', '')}' "
                     f"is now unblocked and ready for you to work on.\n"
                     f"Call task_get(task_id=\"{task['id']}\") for full details, "
                     f"then start working."
                 )
+                if extra_lines:
+                    content = f"{content}\n" + "\n".join(extra_lines)
                 mailbox.send_message(
                     from_agent=sender,
                     to_agent=owner,
@@ -236,8 +376,9 @@ class TaskListTool(Tool):
     def __init__(self):
         self.name = "task_list"
         self.description = (
-            "List all tasks on the team task board. "
-            "Returns a summary of every task including ID, status, owner, and subject."
+            "List all tasks on the team task board. Use this for a high-level snapshot of status, owner, role, "
+            "priority, and dependencies. Do not poll it repeatedly when nothing is changing; use task_get for one "
+            "specific task when you need details."
         )
         self.input_schema = {
             "type": "object",
@@ -324,15 +465,15 @@ class TaskGetTool(Tool):
     def __init__(self):
         self.name = "task_get"
         self.description = (
-            "Get the full details of a specific task by its ID. "
-            "Returns all task fields including description, status, owner, and dependencies."
+            "Get the full details of one specific task. Use this when you need the complete brief before acting, "
+            "especially after receiving a task ID in a spawn brief or a [TASK READY] message."
         )
         self.input_schema = {
             "type": "object",
             "properties": {
                 "task_id": {
                     "type": "string",
-                    "description": "The ID of the task to retrieve.",
+                    "description": "Task ID to retrieve. Prefer the canonical numeric ID string, for example '1'.",
                 },
             },
             "required": ["task_id"],

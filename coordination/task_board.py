@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
 from typing import Any, Optional
 
@@ -35,7 +36,8 @@ class TaskBoard:
         return self.tasks_dir / "_counter.json"
 
     def _task_path(self, task_id: str) -> Path:
-        return self.tasks_dir / f"task_{task_id}.json"
+        normalized_id = self._normalize_task_ref(task_id)
+        return self.tasks_dir / f"task_{normalized_id}.json"
 
     def _next_id(self) -> str:
         """Read, increment, and persist the task counter; return the new ID as a string."""
@@ -87,6 +89,31 @@ class TaskBoard:
                 ids.append(task_id)
         return ids
 
+    def _normalize_task_ref(self, value: Any) -> str:
+        text = str(value).strip()
+        if not text:
+            return ""
+        match = re.search(r"(\d+)$", text)
+        if match:
+            return str(int(match.group(1)))
+        return text
+
+    def _normalize_task_ref_list(self, values: Optional[list[Any]]) -> list[str]:
+        normalized: list[str] = []
+        for value in values or []:
+            task_ref = self._normalize_task_ref(value)
+            if task_ref and task_ref not in normalized:
+                normalized.append(task_ref)
+        return normalized
+
+    def normalize_task_ref(self, value: Any) -> str:
+        """Return the canonical task ID form used by the task board."""
+        return self._normalize_task_ref(value)
+
+    def normalize_task_ref_list(self, values: Optional[list[Any]]) -> list[str]:
+        """Return canonical task IDs for every task reference in *values*."""
+        return self._normalize_task_ref_list(values)
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
@@ -98,6 +125,15 @@ class TaskBoard:
         owner: Optional[str] = None,
         blocks: Optional[list[str]] = None,
         blockedBy: Optional[list[str]] = None,
+        agent_type: Optional[str] = None,
+        priority: Optional[str] = None,
+        goal: Optional[str] = None,
+        scope: Optional[list[str]] = None,
+        deliverables: Optional[list[str]] = None,
+        acceptance: Optional[list[str]] = None,
+        constraints: Optional[list[str]] = None,
+        interfaces: Optional[list[str]] = None,
+        handoff: Optional[str] = None,
     ) -> dict:
         """Create a new task and persist it; returns the task dict."""
         task_id = self._next_id()
@@ -107,11 +143,26 @@ class TaskBoard:
             "description": description,
             "status": "pending",
             "owner": owner,
-            "blocks": blocks if blocks is not None else [],
-            "blockedBy": blockedBy if blockedBy is not None else [],
+            "blocks": self._normalize_task_ref_list(blocks),
+            "blockedBy": self._normalize_task_ref_list(blockedBy),
             "createdAt": timestamp_now(),
             "updatedAt": timestamp_now(),
         }
+        optional_fields = {
+            "agentType": agent_type,
+            "priority": priority,
+            "goal": goal,
+            "scope": scope if scope is not None else [],
+            "deliverables": deliverables if deliverables is not None else [],
+            "acceptance": acceptance if acceptance is not None else [],
+            "constraints": constraints if constraints is not None else [],
+            "interfaces": interfaces if interfaces is not None else [],
+            "handoff": handoff,
+        }
+        for key, value in optional_fields.items():
+            if value in (None, "", []):
+                continue
+            task[key] = value
         path = self._task_path(task_id)
         lock = FileLock(path)
         with lock:
@@ -120,6 +171,7 @@ class TaskBoard:
 
     def get_task(self, task_id: str) -> Optional[dict]:
         """Return the task dict for *task_id*, or ``None`` if not found."""
+        task_id = self._normalize_task_ref(task_id)
         path = self._task_path(task_id)
         lock = FileLock(path)
         with lock:
@@ -137,6 +189,7 @@ class TaskBoard:
         Returns the updated task dict.
         Raises ``KeyError`` if the task does not exist.
         """
+        task_id = self._normalize_task_ref(task_id)
         path = self._task_path(task_id)
         lock = FileLock(path)
         with lock:
@@ -145,8 +198,8 @@ class TaskBoard:
                 raise KeyError(f"Task {task_id!r} not found")
 
             # Handle list extension helpers before applying remaining kwargs
-            add_blocks: list[str] = kwargs.pop("addBlocks", None) or []
-            add_blocked_by: list[str] = kwargs.pop("addBlockedBy", None) or []
+            add_blocks: list[str] = self._normalize_task_ref_list(kwargs.pop("addBlocks", None))
+            add_blocked_by: list[str] = self._normalize_task_ref_list(kwargs.pop("addBlockedBy", None))
 
             if add_blocks:
                 existing: list[str] = task.get("blocks", [])
@@ -164,6 +217,8 @@ class TaskBoard:
 
             # Apply remaining scalar/list updates
             for key, value in kwargs.items():
+                if key in {"blocks", "blockedBy"}:
+                    value = self._normalize_task_ref_list(value)
                 task[key] = value
 
             task["updatedAt"] = timestamp_now()

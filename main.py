@@ -308,16 +308,19 @@ def main():
             print(f"\nteam-lead> {response}\n")
         if leader.agent_manager.active_count > 0:
             print("[Team working...]\n")
-            leader.wait_for_completion(timeout=1800, progress_callback=_print_progress)
+            all_completed = leader.wait_for_completion(timeout=1800, progress_callback=_print_progress)
             print()
-            print("\n[All agents completed. Synthesizing results...]\n")
-            if config.streaming:
-                print("team-lead> ", end="", flush=True)
-                synthesis = leader.synthesize_results(stream_callback=_stream_text)
-                print("\n")
+            if all_completed:
+                print("\n[All agents completed. Synthesizing results...]\n")
+                if config.streaming:
+                    print("team-lead> ", end="", flush=True)
+                    synthesis = leader.synthesize_results(stream_callback=_stream_text)
+                    print("\n")
+                else:
+                    synthesis = leader.synthesize_results()
+                    print(f"\nteam-lead> {synthesis}\n")
             else:
-                synthesis = leader.synthesize_results()
-                print(f"\nteam-lead> {synthesis}\n")
+                print("\n[Agent work stopped before all tasks completed. Use /tasks or /status to inspect remaining work.]\n")
         leader.shutdown()
         return
 
@@ -390,21 +393,24 @@ def main():
                 old_handler = signal.getsignal(signal.SIGINT)
                 try:
                     signal.signal(signal.SIGINT, signal.default_int_handler)
-                    leader.wait_for_completion(timeout=1800, progress_callback=_print_progress)
+                    all_completed = leader.wait_for_completion(timeout=1800, progress_callback=_print_progress)
                     print()
                 except KeyboardInterrupt:
                     print("\n\n[Agents still running. Use /status to check, or type a message.]\n")
                     signal.signal(signal.SIGINT, old_handler)
                     continue
                 signal.signal(signal.SIGINT, old_handler)
-                print("\n[All agents completed. Synthesizing results...]\n")
-                if config.streaming:
-                    print("team-lead> ", end="", flush=True)
-                    synthesis = leader.synthesize_results(stream_callback=_stream_text)
-                    print("\n")
+                if all_completed:
+                    print("\n[All agents completed. Synthesizing results...]\n")
+                    if config.streaming:
+                        print("team-lead> ", end="", flush=True)
+                        synthesis = leader.synthesize_results(stream_callback=_stream_text)
+                        print("\n")
+                    else:
+                        synthesis = leader.synthesize_results()
+                        print(f"\nteam-lead> {synthesis}\n")
                 else:
-                    synthesis = leader.synthesize_results()
-                    print(f"\nteam-lead> {synthesis}\n")
+                    print("\n[Agent work stopped before all tasks completed. Use /tasks or /status to inspect remaining work.]\n")
         except Exception as e:
             print(f"\nError: {e}\n")
 

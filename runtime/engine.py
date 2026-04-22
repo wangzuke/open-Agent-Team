@@ -56,6 +56,7 @@ class QueryEngine:
         self._inbox_queue: queue.Queue = queue.Queue()
         self._queued_inbox_ids: set[str] = set()
         self._inbox_poller_started: bool = False
+        self._tool_log_counter: int = 0
 
         if llm_client is not None:
             self.client = llm_client
@@ -118,11 +119,22 @@ class QueryEngine:
         results: list[dict[str, Any]] = []
 
         for tc in tool_calls:
+            self._tool_log_counter += 1
+            log_call_id = self._tool_log_counter
             tool = self.context.tools.get(tc.name)
 
             if tool is None:
                 error_msg = f"Tool '{tc.name}' not found in context."
                 self.logger.warning(error_msg)
+                if self.activity_logger:
+                    self.activity_logger.log_tool_call(
+                        tc.name,
+                        tc.input,
+                        error_msg,
+                        0,
+                        status="not_found",
+                        tool_call_id=log_call_id,
+                    )
                 results.append({
                     "type": "tool_result",
                     "tool_use_id": tc.id,
@@ -142,6 +154,8 @@ class QueryEngine:
                         tc.name, tc.input,
                         output if isinstance(output, str) else str(output),
                         elapsed,
+                        status="ok",
+                        tool_call_id=log_call_id,
                     )
                 results.append({
                     "type": "tool_result",
@@ -153,8 +167,16 @@ class QueryEngine:
                 error_msg = f"Tool '{tc.name}' raised an exception: {exc}"
                 self.logger.error(error_msg, exc_info=True)
                 if self.activity_logger:
+                    self.activity_logger.log_tool_call(
+                        tc.name,
+                        tc.input,
+                        error_msg,
+                        elapsed,
+                        status="error",
+                        tool_call_id=log_call_id,
+                    )
                     self.activity_logger.log_error(
-                        error_msg, {"tool": tc.name, "input": tc.input}
+                        error_msg, {"tool": tc.name, "input": tc.input, "tool_use_id": tc.id}
                     )
                 results.append({
                     "type": "tool_result",
@@ -261,12 +283,13 @@ class QueryEngine:
                 self._queued_inbox_ids.discard(message_id)
             self._inbox_queue.put(message)
 
-    def _inject_inbox_messages(self) -> list[dict]:
+    def _inject_inbox_messages(self) -> tuple[list[dict], str]:
         """Inject queued inbox messages into persistent history."""
         messages = self._drain_inbox_queue()
         if not messages:
-            return []
-        self.context.add_user_message(self._format_inbox_messages(messages))
+            return [], ""
+        injected_content = self._format_inbox_messages(messages)
+        self.context.add_user_message(injected_content)
         if self.activity_logger:
             self.activity_logger.log_event(
                 "inbox_injected",
@@ -276,8 +299,31 @@ class QueryEngine:
                     "ids": [m.get("id") for m in messages],
                 },
             )
-        self._mark_inbox_messages_read(messages)
-        return messages
+        return messages, injected_content
+
+    def _rollback_inbox_injection(self, injected_content: str) -> None:
+        """Remove the most recent injected inbox message from history."""
+        if not injected_content or not self.context.messages:
+            return
+        last_message = self.context.messages[-1]
+        if (
+            last_message.get("role") == "user"
+            and last_message.get("content") == injected_content
+        ):
+            self.context.messages.pop()
+
+    def _has_pending_tool_continuation(self) -> bool:
+        """Return True when the next turn should first consume tool results."""
+        if not self.context.messages:
+            return False
+        last_message = self.context.messages[-1]
+        content = last_message.get("content", "")
+        if last_message.get("role") != "user" or not isinstance(content, list):
+            return False
+        return all(
+            isinstance(block, dict) and block.get("type") == "tool_result"
+            for block in content
+        )
 
     # ------------------------------------------------------------------
     # Main agentic loop
@@ -340,14 +386,6 @@ class QueryEngine:
                 max_turns,
             )
 
-            delivered_inbox_messages: list[dict] = []
-            try:
-                delivered_inbox_messages = self._inject_inbox_messages()
-            except Exception:
-                if delivered_inbox_messages:
-                    self._requeue_inbox_messages(delivered_inbox_messages)
-                raise
-
             compressed = ctx.maybe_compress_history()
             if compressed and self.activity_logger:
                 self.activity_logger.log_event(
@@ -355,65 +393,79 @@ class QueryEngine:
                     {"estimated_tokens": ctx.estimate_token_count()},
                 )
 
-            input_token_estimate = ctx.estimate_token_count()
-            result = self.run_turn(stream_callback=stream_callback)
-            last_text = result.text_output
-            usage = result.usage or {
-                "input_tokens": input_token_estimate,
-                "output_tokens": max(1, len(result.text_output) // 4)
-                + max(0, len(result.tool_calls) * 12),
-            }
-            delta = ctx.token_tracker.record(usage)
-            if self.activity_logger:
-                self.activity_logger.log_token_usage(
-                    model=ctx.model,
-                    usage=delta,
-                    totals=ctx.token_tracker.snapshot(),
-                )
+            delivered_inbox_messages: list[dict] = []
+            injected_inbox_content = ""
+            try:
+                if not self._has_pending_tool_continuation():
+                    delivered_inbox_messages, injected_inbox_content = self._inject_inbox_messages()
 
-            assistant_content: list[dict[str, Any]] = []
-            if result.text_output:
-                assistant_content.append({"type": "text", "text": result.text_output})
-            for tc in result.tool_calls:
-                assistant_content.append({
-                    "type": "tool_use",
-                    "id": tc.id,
-                    "name": tc.name,
-                    "input": tc.input,
-                })
-
-            if assistant_content:
-                ctx.add_assistant_message(assistant_content)
-            else:
-                ctx.add_assistant_message("")
-
-            if result.stop_reason == "end_turn" and not result.tool_calls:
-                self.logger.info(
-                    "Agent '%s' finished after %d turn(s).",
-                    ctx.agent_identity.agent_name,
-                    turn_index + 1,
-                )
-                return result.text_output
-
-            if result.tool_calls:
-                tool_results = self.execute_tools(result.tool_calls)
-                ctx.add_tool_results(tool_results)
-
-            if ctx.token_tracker.over_budget:
-                warning = (
-                    f"[SYSTEM WARNING] Token budget exhausted for agent "
-                    f"'{ctx.agent_identity.agent_name}'. Total tokens: "
-                    f"{ctx.token_tracker.total_tokens}."
-                )
-                ctx.add_user_message(warning)
+                input_token_estimate = ctx.estimate_token_count()
+                result = self.run_turn(stream_callback=stream_callback)
+                last_text = result.text_output
+                usage = result.usage or {
+                    "input_tokens": input_token_estimate,
+                    "output_tokens": max(1, len(result.text_output) // 4)
+                    + max(0, len(result.tool_calls) * 12),
+                }
+                delta = ctx.token_tracker.record(usage)
                 if self.activity_logger:
-                    self.activity_logger.log_event(
-                        "token_budget_exhausted",
-                        ctx.token_tracker.snapshot(),
+                    self.activity_logger.log_token_usage(
+                        model=ctx.model,
+                        usage=delta,
+                        totals=ctx.token_tracker.snapshot(),
                     )
-                last_text = (last_text + "\n\n" + warning).strip()
-                token_budget_exhausted = True
-                break
+
+                assistant_content: list[dict[str, Any]] = []
+                if result.text_output:
+                    assistant_content.append({"type": "text", "text": result.text_output})
+                for tc in result.tool_calls:
+                    assistant_content.append({
+                        "type": "tool_use",
+                        "id": tc.id,
+                        "name": tc.name,
+                        "input": tc.input,
+                    })
+
+                if assistant_content:
+                    ctx.add_assistant_message(assistant_content)
+                else:
+                    ctx.add_assistant_message("")
+
+                if result.tool_calls:
+                    tool_results = self.execute_tools(result.tool_calls)
+                    ctx.add_tool_results(tool_results)
+
+                if delivered_inbox_messages:
+                    self._mark_inbox_messages_read(delivered_inbox_messages)
+
+                if result.stop_reason == "end_turn" and not result.tool_calls:
+                    self.logger.info(
+                        "Agent '%s' finished after %d turn(s).",
+                        ctx.agent_identity.agent_name,
+                        turn_index + 1,
+                    )
+                    return result.text_output
+
+                if ctx.token_tracker.over_budget:
+                    warning = (
+                        f"[SYSTEM WARNING] Token budget exhausted for agent "
+                        f"'{ctx.agent_identity.agent_name}'. Total tokens: "
+                        f"{ctx.token_tracker.total_tokens}."
+                    )
+                    ctx.add_user_message(warning)
+                    if self.activity_logger:
+                        self.activity_logger.log_event(
+                            "token_budget_exhausted",
+                            ctx.token_tracker.snapshot(),
+                        )
+                    last_text = (last_text + "\n\n" + warning).strip()
+                    token_budget_exhausted = True
+                    break
+            except Exception:
+                if delivered_inbox_messages:
+                    self._rollback_inbox_injection(injected_inbox_content)
+                    self._requeue_inbox_messages(delivered_inbox_messages)
+                raise
 
         if token_budget_exhausted:
             self._handle_max_turns_exceeded()
@@ -428,7 +480,7 @@ class QueryEngine:
         return last_text
 
     def _handle_max_turns_exceeded(self) -> None:
-        """Auto-complete or block orphaned tasks and notify team-lead."""
+        """Block orphaned tasks and notify team-lead."""
         ctx = self.context
         agent_name = ctx.agent_identity.agent_name
         team_name = ctx.agent_identity.team_name
@@ -445,25 +497,20 @@ class QueryEngine:
                 filter_status="in_progress", filter_owner=agent_name
             )
 
-            completed_ids: list[str] = []
             blocked_ids: list[str] = []
 
             for task in stuck_tasks:
                 try:
-                    if self._task_output_exists(task):
-                        board.update_task(task["id"], status="completed")
-                        completed_ids.append(task["id"])
-                    else:
-                        board.update_task(
-                            task["id"],
-                            status="blocked",
-                            description=(
-                                task.get("description", "")
-                                + f"\n\n[AUTO-BLOCKED] Agent '{agent_name}' exhausted "
-                                f"max_turns without completing this task."
-                            ),
-                        )
-                        blocked_ids.append(task["id"])
+                    board.update_task(
+                        task["id"],
+                        status="blocked",
+                        description=(
+                            task.get("description", "")
+                            + f"\n\n[AUTO-BLOCKED] Agent '{agent_name}' exhausted "
+                            f"max_turns without completing this task."
+                        ),
+                    )
+                    blocked_ids.append(task["id"])
                 except Exception as exc:
                     self.logger.error(
                         "Failed to update stuck task %s: %s", task["id"], exc
@@ -472,17 +519,12 @@ class QueryEngine:
             parts: list[str] = [
                 f"Agent '{agent_name}' exhausted its turn limit and is shutting down."
             ]
-            if completed_ids:
-                parts.append(
-                    "Tasks auto-completed (output files found):\n"
-                    + "\n".join(f"  - Task {tid}" for tid in completed_ids)
-                )
             if blocked_ids:
                 parts.append(
-                    "Tasks auto-blocked (incomplete):\n"
+                    "Tasks auto-blocked:\n"
                     + "\n".join(f"  - Task {tid}" for tid in blocked_ids)
                 )
-            if not completed_ids and not blocked_ids:
+            if not blocked_ids:
                 parts.append("No in_progress tasks found.")
 
             mailbox = Mailbox(ctx.config, team_name)
@@ -491,8 +533,7 @@ class QueryEngine:
                 to_agent="team-lead",
                 content="\n\n".join(parts),
                 summary=(
-                    f"{agent_name} done — "
-                    f"{len(completed_ids)} completed, {len(blocked_ids)} blocked"
+                    f"{agent_name} done — {len(blocked_ids)} blocked"
                 ),
             )
 
@@ -502,23 +543,3 @@ class QueryEngine:
                 agent_name, exc,
             )
 
-    @staticmethod
-    def _task_output_exists(task: dict) -> bool:
-        """Heuristic: check if files mentioned in the task description exist."""
-        import re
-        from pathlib import Path
-
-        desc = task.get("description", "")
-        patterns = re.findall(
-            r'(?:^|\s)(\w[\w/\\.-]*\.(?:py|ts|js|json|yaml|yml|toml|txt|md|html|css))\b',
-            desc,
-        )
-        if not patterns:
-            return False
-
-        found = 0
-        for p in patterns:
-            if Path(p).exists():
-                found += 1
-
-        return found > 0 and found >= len(patterns) * 0.5

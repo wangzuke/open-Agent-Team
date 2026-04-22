@@ -94,8 +94,11 @@ class TeamLeader:
         """Handle a spawn_agent tool result by actually spawning the agent."""
         name = params.get("name", "")
         agent_type = params.get("agent_type", "coder")
-        task_desc = params.get("task_description", "")
+        task_desc = params.get("task_description", "") or params.get("mission", "")
         model = params.get("model", "") or self.config.default_model
+        task_ids = self.task_board.normalize_task_ref_list(params.get("task_ids") or [])
+        spawn_spec = dict(params)
+        spawn_spec["task_ids"] = task_ids
 
         if not name:
             return
@@ -106,12 +109,88 @@ class TeamLeader:
             model=model,
         )
 
-        self.agent_manager.spawn_agent(definition, task_description=task_desc)
-        self.logger.log_event("agent_spawned", {
-            "name": name,
-            "type": agent_type,
-            "model": model,
-        })
+        updates = self._assign_spawned_tasks(name, agent_type, task_ids)
+        try:
+            self.agent_manager.spawn_agent(
+                definition,
+                task_description=task_desc,
+                spawn_spec=spawn_spec,
+            )
+            self.logger.log_event("agent_spawned", {
+                "name": name,
+                "type": agent_type,
+                "model": model,
+                "task_ids": task_ids,
+            })
+        except Exception:
+            self._rollback_spawned_task_assignments(updates)
+            raise
+
+    def _assign_spawned_tasks(
+        self,
+        agent_name: str,
+        agent_type: str,
+        task_ids: list[str],
+    ) -> list[dict[str, str | None]]:
+        """Assign spawned tasks to the new agent before the worker starts polling."""
+        updates: list[dict[str, str | None]] = []
+        for task_id in task_ids:
+            normalized_task_id = self.task_board.normalize_task_ref(task_id)
+            task = self.task_board.get_task(normalized_task_id)
+            if task is None:
+                self.logger.log_error(
+                    f"spawn_agent referenced missing task '{normalized_task_id}'",
+                    {"agent": agent_name, "agent_type": agent_type},
+                )
+                continue
+
+            owner = task.get("owner")
+            task_role = task.get("agentType")
+            if owner and owner != agent_name:
+                self.logger.log_error(
+                    f"Task '{normalized_task_id}' is already owned by '{owner}', cannot assign to '{agent_name}'.",
+                    {"agent_type": agent_type},
+                )
+                continue
+
+            changes: dict[str, Any] = {}
+            if owner != agent_name:
+                changes["owner"] = agent_name
+            if not task_role:
+                changes["agentType"] = agent_type
+            if not changes:
+                continue
+
+            updates.append({
+                "task_id": normalized_task_id,
+                "previous_owner": owner,
+                "previous_agent_type": task_role,
+            })
+            self.task_board.update_task(normalized_task_id, **changes)
+
+        return updates
+
+    def _rollback_spawned_task_assignments(
+        self,
+        updates: list[dict[str, str | None]],
+    ) -> None:
+        for item in updates:
+            task_id = item["task_id"] or ""
+            restore: dict[str, Any] = {"owner": item.get("previous_owner")}
+            previous_agent_type = item.get("previous_agent_type")
+            if previous_agent_type:
+                restore["agentType"] = previous_agent_type
+            else:
+                task = self.task_board.get_task(task_id)
+                if task and "agentType" in task:
+                    restore["agentType"] = None
+            try:
+                self.task_board.update_task(task_id, **restore)
+            except Exception as exc:
+                self.logger.log_error(
+                    f"Failed to rollback task assignment for '{task_id}': {exc}",
+                    {},
+                )
 
     def handle_user_message(self, message: str, stream_callback: Any = None) -> str:
         """Process a user message through the leader's query loop."""
@@ -151,7 +230,7 @@ class TeamLeader:
         timeout: float = 600,
         poll_interval: float = 5,
         progress_callback: Any = None,
-    ):
+    ) -> bool:
         """Wait for all teammate agents to complete, with health monitoring.
 
         Parameters
@@ -159,14 +238,34 @@ class TeamLeader:
         progress_callback:
             Optional callable receiving a dict with keys ``elapsed``,
             ``completed``, ``total``, ``active_agents`` every poll cycle.
+
+        Returns
+        -------
+        bool
+            True if all tasks are completed when the wait loop ends, else False.
         """
         start = time.monotonic()
         seen_exited: set[str] = set()
         seen_inbox_ids: set[str] = set()
         stall_state: dict[str, dict[str, float | str]] = {}
-        stall_threshold = max(poll_interval * 4, 60.0)
+        stall_threshold = max(poll_interval * 12, 180.0)
+        nudge_cooldown = max(poll_interval * 24, 300.0)
 
         while time.monotonic() - start < timeout:
+            try:
+                tasks = self.task_board.list_tasks()
+                total = len(tasks)
+                completed = sum(1 for t in tasks if t["status"] == "completed")
+                all_completed = total > 0 and completed == total
+            except Exception:
+                tasks = []
+                total = 0
+                completed = 0
+                all_completed = False
+
+            if all_completed:
+                break
+
             if self.agent_manager.active_count == 0:
                 break
 
@@ -192,13 +291,10 @@ class TeamLeader:
                     seen_exited.add(name)
                     self._recover_orphaned_tasks(name, status)
 
-            self._nudge_stalled_tasks(stall_state, stall_threshold)
+            self._nudge_stalled_tasks(stall_state, stall_threshold, nudge_cooldown)
 
             if progress_callback is not None:
                 try:
-                    tasks = self.task_board.list_tasks()
-                    total = len(tasks)
-                    completed = sum(1 for t in tasks if t["status"] == "completed")
                     active = self.agent_manager.active_count
                     elapsed = time.monotonic() - start
                     progress_callback({
@@ -219,10 +315,17 @@ class TeamLeader:
                 seen_exited.add(name)
                 self._recover_orphaned_tasks(name, status)
 
+        try:
+            tasks = self.task_board.list_tasks()
+            return bool(tasks) and all(t["status"] == "completed" for t in tasks)
+        except Exception:
+            return False
+
     def _nudge_stalled_tasks(
         self,
         stall_state: dict[str, dict[str, float | str]],
         stall_threshold: float,
+        nudge_cooldown: float,
     ) -> None:
         """Detect long-idle in-progress tasks and send a status-check nudge."""
         now = time.monotonic()
@@ -260,7 +363,7 @@ class TeamLeader:
             if (
                 owner
                 and now - first_seen >= stall_threshold
-                and now - last_nudged >= stall_threshold
+                and now - last_nudged >= nudge_cooldown
             ):
                 try:
                     self.mailbox.send_message(

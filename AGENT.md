@@ -243,36 +243,15 @@ prompt 组装在 [prompts/builder.py](prompts/builder.py)。
 
 ## 9. 当前代码库里最容易踩的坑
 
-### 9.1 不要只改 prompt
 
-如果问题本质是：
-
-- 工具被错误暴露
-- leader 空轮询
-- worker 重复扫描
-- mailbox 注入时机不对
-
-那么只改 prompt 通常不够，应该优先检查：
-
-- `registry.py`
-- `engine.py`
-- `leader.py`
-- `task_tools.py`
-
-### 9.2 `.open_teams` 不是业务输入
+### 9.1 `.open_teams` 不是业务输入
 
 `.open_teams` 是运行态元数据，不是业务代码。
 
 如果某个改动让 agent 把 `.open_teams` 重新扫进上下文，通常是在制造噪声和额外 token 消耗。
 
-### 9.3 注意 leader 和 teammate 的回合上限不是同一个字段
 
-- leader 看 `config.max_turns`
-- teammate 看 `config.max_agent_turns`
-
-改回合策略时不要只改一个地方。
-
-### 9.4 inbox 机制现在是代码层投递，不是工具式拉取
+### 9.2 inbox 机制现在是代码层投递，不是工具式拉取
 
 如果后续开发又把 `check_inbox` 放回默认工具集，或者 prompt 重新鼓励手动查信，通常会重新引入无意义的邮箱轮询成本。
 

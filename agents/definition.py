@@ -8,7 +8,7 @@ from typing import Any
 
 @dataclass
 class AgentDefinition:
-    agent_type: str  # "leader" | "coder" | "researcher" | "tester" | "reviewer"
+    agent_type: str  # "leader" | "coder" | "researcher" | "tester" | "reviewer" | "architect"
     name: str = ""
     model: str = ""
     prompt_override: str = ""

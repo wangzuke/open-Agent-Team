@@ -9,6 +9,7 @@ from .base import Tool
 if TYPE_CHECKING:
     from open_teams.config import OpenTeamsConfig
     from open_teams.coordination.mailbox import Mailbox
+    from open_teams.coordination.team import TeamManager
 
 
 class SendMessageTool(Tool):
@@ -41,6 +42,7 @@ class SendMessageTool(Tool):
         self._agent_name: Optional[str] = None
         self._config: Optional["OpenTeamsConfig"] = None
         self._mailbox: Optional["Mailbox"] = None
+        self._team_manager: Optional["TeamManager"] = None
 
     def set_context(self, team_name: str, agent_name: str, config: "OpenTeamsConfig") -> None:
         """Configure which team and agent this tool belongs to."""
@@ -48,6 +50,7 @@ class SendMessageTool(Tool):
         self._agent_name = agent_name
         self._config = config
         self._mailbox = None  # reset so it gets re-created lazily
+        self._team_manager = None
 
     def _get_mailbox(self) -> "Mailbox":
         """Lazily create and return the Mailbox instance."""
@@ -60,6 +63,26 @@ class SendMessageTool(Tool):
             self._mailbox = Mailbox(self._config, self._team_name)
         return self._mailbox
 
+    def _get_team_manager(self) -> "TeamManager":
+        if self._team_manager is None:
+            if self._config is None:
+                raise RuntimeError(
+                    "SendMessageTool: set_context() must be called before execute()."
+                )
+            from open_teams.coordination.team import TeamManager
+            self._team_manager = TeamManager(self._config)
+        return self._team_manager
+
+    def _recipient_exists(self, recipient: str) -> bool:
+        if not self._team_name:
+            return False
+        tm = self._get_team_manager()
+        try:
+            members = tm.list_members(self._team_name)
+        except KeyError:
+            return False
+        return any(member.get("name") == recipient for member in members)
+
     def execute(self, params: dict[str, Any]) -> str:
         to: str = params["to"]
         content: str = params["content"]
@@ -67,6 +90,10 @@ class SendMessageTool(Tool):
 
         if not self._agent_name:
             return "Error: SendMessageTool has no agent context. Call set_context() first."
+        if not self._team_name:
+            return "Error: SendMessageTool has no team context. Call set_context() first."
+        if not self._recipient_exists(to):
+            return f"Error: Recipient '{to}' is not a known member of team '{self._team_name}'."
 
         try:
             mailbox = self._get_mailbox()
