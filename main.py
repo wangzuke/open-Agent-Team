@@ -10,7 +10,21 @@ import sys
 import signal
 from pathlib import Path
 
-from open_teams.config import load_and_init_config, OpenTeamsConfig, CONFIG_FILE_NAME, PACKAGE_DIR
+if __package__ in (None, ""):
+    package_dir = Path(__file__).resolve().parent
+    package_parent = package_dir.parent
+    if sys.path:
+        sys.path[0] = str(package_parent)
+    else:
+        sys.path.insert(0, str(package_parent))
+
+from open_teams.config import (
+    load_and_init_config,
+    OpenTeamsConfig,
+    CONFIG_FILE_NAME,
+    PACKAGE_DIR,
+    DEFAULT_WORKSPACE_BASE,
+)
 from open_teams.agents.leader import TeamLeader
 
 
@@ -47,7 +61,7 @@ def parse_args() -> argparse.Namespace:
         "--project-root",
         type=str,
         default=None,
-        help="Project root directory (default: cwd)",
+        help=f"Project root directory (default container: {DEFAULT_WORKSPACE_BASE}; auto-creates proj_<timestamp>)",
     )
     parser.add_argument(
         "--team-name",
@@ -154,7 +168,7 @@ def generate_default_config(path: Path):
         "sandbox_allowed_dirs": [],
         "streaming": True,
         "team_name": "default",
-        "project_root": ".",
+        "project_root": "workspace",
     }
     with open(path, "w", encoding="utf-8") as f:
         json.dump(config_template, f, indent=2, ensure_ascii=False)

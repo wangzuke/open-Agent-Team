@@ -91,9 +91,12 @@ python -m open_teams.main --init-config
   "max_agent_turns": 200,
   "temperature": 0.0,
   "team_name": "default",
-  "project_root": "."
+  "project_root": "workspace"
 }
 ```
+
+当 `project_root` 配置为 `workspace` 时，启动时会在 `open_teams/workspace/` 下自动创建新的项目目录，
+目录名形如 `proj_20260424_153000`，并把运行时元数据写到该项目目录下的 `.open_teams/`。
 
 也可以手动创建配置文件：在 `open_teams/` 包目录下创建 `open_teams.json`，按上述格式填写配置即可。
 ```
@@ -112,7 +115,7 @@ python -m open_teams.main --init-config
 | `max_agent_turns` | int | `200` | 每个 Teammate 最大对话轮次 |
 | `temperature` | float | `0.0` | 采样温度 |
 | `team_name` | string | `"default"` | 团队名称 |
-| `project_root` | string | `"."` | 项目根目录 |
+| `project_root` | string | `workspace` | 项目根目录配置。默认会把它当作项目容器目录，并在其下自动创建 `proj_<时间戳>` 项目目录 |
 
 也可以指定配置文件路径：
 
@@ -137,7 +140,7 @@ export OPENAI_BASE_URL="https://api.deepseek.com/v1"  # 可选
 ```
 --config          配置文件路径（默认 open_teams/open_teams.json）
 --init-config     在 open_teams/ 包目录下生成默认配置文件并退出
---project-root    项目根目录（默认当前目录）
+--project-root    项目根目录（默认容器目录为 open_teams/workspace；会自动创建 proj_<时间戳>）
 --team-name       团队名称（默认 "default"）
 --provider        LLM 提供商：anthropic / openai
 --leader-model    Leader 使用的模型

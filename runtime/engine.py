@@ -57,6 +57,8 @@ class QueryEngine:
         self._queued_inbox_ids: set[str] = set()
         self._inbox_poller_started: bool = False
         self._tool_log_counter: int = 0
+        self._early_exit_requested: bool = False
+        self._early_exit_message: str = ""
 
         if llm_client is not None:
             self.client = llm_client
@@ -186,6 +188,18 @@ class QueryEngine:
                 })
 
         return results
+
+    def request_early_exit(self, message: str = "") -> None:
+        """Stop the current run loop after the active tool batch finishes."""
+        self._early_exit_requested = True
+        self._early_exit_message = message
+
+    def _consume_early_exit(self) -> str:
+        """Consume and clear any pending early-exit request."""
+        message = self._early_exit_message
+        self._early_exit_requested = False
+        self._early_exit_message = ""
+        return message
 
     # ------------------------------------------------------------------
     # Background inbox polling
@@ -355,6 +369,8 @@ class QueryEngine:
         warning_injected: bool = False
         token_budget_exhausted: bool = False
 
+        self._consume_early_exit()
+
         for turn_index in range(max_turns):
             if ctx.abort_event.is_set():
                 self.logger.info("Abort event set — stopping run_loop.")
@@ -437,6 +453,14 @@ class QueryEngine:
 
                 if delivered_inbox_messages:
                     self._mark_inbox_messages_read(delivered_inbox_messages)
+
+                if self._early_exit_requested:
+                    early_exit_message = self._consume_early_exit()
+                    self.logger.info(
+                        "Agent '%s' exiting run_loop early after tool execution.",
+                        ctx.agent_identity.agent_name,
+                    )
+                    return early_exit_message or last_text
 
                 if result.stop_reason == "end_turn" and not result.tool_calls:
                     self.logger.info(

@@ -70,9 +70,20 @@ class TeamLeader:
 
         def _hooked_execute_tools(tool_calls):
             results = self._original_execute_tools(tool_calls)
+            spawned_any = False
             for tc in tool_calls:
                 if tc.name == "spawn_agent":
+                    spawned_any = True
                     self._handle_spawn_request(tc.input)
+            if spawned_any and self._dispatch_is_complete():
+                self.engine.request_early_exit(
+                    "Team dispatched. Waiting for teammate progress updates."
+                )
+            elif spawned_any:
+                self.logger.log_event(
+                    "dispatch_incomplete",
+                    {"unassigned_task_ids": self._get_unassigned_active_task_ids()},
+                )
             return results
 
         self.engine.execute_tools = _hooked_execute_tools
@@ -192,18 +203,104 @@ class TeamLeader:
                     {},
                 )
 
+    def _get_unassigned_active_task_ids(self) -> list[str]:
+        """Return unfinished task IDs that still have no owner assigned."""
+        unassigned: list[str] = []
+        for task in self.task_board.list_tasks():
+            if task.get("status") == "completed":
+                continue
+            owner = str(task.get("owner") or "").strip()
+            if owner:
+                continue
+            task_id = str(task.get("id") or "").strip()
+            if task_id:
+                unassigned.append(task_id)
+        return unassigned
+
+    def _dispatch_is_complete(self) -> bool:
+        """Return True when every unfinished task has been assigned an owner."""
+        return not self._get_unassigned_active_task_ids()
+
+    def _get_available_unassigned_task_ids(self) -> list[str]:
+        """Return unassigned pending tasks whose dependencies are already satisfied."""
+        return [
+            str(task.get("id"))
+            for task in self.task_board.get_available_tasks()
+            if task.get("id")
+        ]
+
+    def _build_dispatch_guard_prompt(self, task_ids: list[str]) -> str:
+        task_refs = ", ".join(f"Task {task_id}" for task_id in task_ids)
+        return (
+            "[SYSTEM ORCHESTRATION RULE]\n"
+            f"You still have unfinished tasks with no owner assigned: {task_refs}.\n"
+            "Before ending your turn, you MUST do one of the following for each such task:\n"
+            "1. spawn_agent with task_ids covering that task so the runtime can assign ownership automatically, or\n"
+            "2. explicitly update/restructure the task board so the task no longer exists as unassigned work.\n"
+            "Blocked tasks may still be assigned and spawned now; teammate workers will wait until dependencies clear.\n"
+            "Do not poll progress or inspect files right now. Finish dispatch first."
+        )
+
+    def _run_until_dispatch_stable(
+        self,
+        initial_message: str | list[dict[str, Any]] | None = None,
+        stream_callback: Any = None,
+        max_attempts: int = 4,
+    ) -> str:
+        """Run the leader loop until there are no unfinished unassigned tasks."""
+        next_message = initial_message
+        last_result = ""
+        for attempt in range(1, max_attempts + 1):
+            last_result = self.engine.run_loop(
+                initial_message=next_message,
+                stream_callback=stream_callback,
+            )
+            unassigned = self._get_unassigned_active_task_ids()
+            if not unassigned:
+                return last_result
+
+            self.logger.log_event(
+                "dispatch_guard_retry",
+                {"attempt": attempt, "unassigned_task_ids": unassigned},
+            )
+            next_message = self._build_dispatch_guard_prompt(unassigned)
+
+        self.logger.log_event(
+            "dispatch_guard_unresolved",
+            {"unassigned_task_ids": self._get_unassigned_active_task_ids()},
+        )
+        return last_result
+
+    def _resume_dispatch_for_available_tasks(self, task_ids: list[str]) -> str:
+        """Wake the leader to assign/spawn owners for newly actionable tasks."""
+        prompt = (
+            "[TEAM EVENT]\n"
+            f"The following tasks are now actionable and still unassigned: {', '.join('Task ' + task_id for task_id in task_ids)}.\n"
+            "Assign owners and spawn the corresponding teammates now. "
+            "Do not wait or poll progress before dispatch is complete."
+        )
+        self.logger.log_event("dispatch_resume_requested", {"task_ids": task_ids})
+        result = self._run_until_dispatch_stable(initial_message=prompt)
+        self.logger.log_message("assistant", result)
+        return result
+
     def handle_user_message(self, message: str, stream_callback: Any = None) -> str:
         """Process a user message through the leader's query loop."""
         self.logger.log_message("user", message)
-        result = self.engine.run_loop(initial_message=message, stream_callback=stream_callback)
+        result = self._run_until_dispatch_stable(
+            initial_message=message,
+            stream_callback=stream_callback,
+        )
         self.logger.log_message("assistant", result)
         return result
 
     def handle_followup(self, message: str, stream_callback: Any = None) -> str:
         """Handle follow-up messages in the ongoing conversation."""
         self.logger.log_message("user", message)
-        self.context.add_user_message(message)
-        result = self.engine.run_loop(stream_callback=stream_callback)
+        result = self._run_until_dispatch_stable(
+            initial_message=message,
+            stream_callback=stream_callback,
+        )
         self.logger.log_message("assistant", result)
         return result
 
@@ -247,6 +344,7 @@ class TeamLeader:
         start = time.monotonic()
         seen_exited: set[str] = set()
         seen_inbox_ids: set[str] = set()
+        seen_available_unassigned: set[str] = set()
         stall_state: dict[str, dict[str, float | str]] = {}
         stall_threshold = max(poll_interval * 12, 180.0)
         nudge_cooldown = max(poll_interval * 24, 300.0)
@@ -263,10 +361,12 @@ class TeamLeader:
                 completed = 0
                 all_completed = False
 
-            if all_completed:
-                break
+            try:
+                available_unassigned_ids = set(self._get_available_unassigned_task_ids())
+            except Exception:
+                available_unassigned_ids = set()
 
-            if self.agent_manager.active_count == 0:
+            if all_completed:
                 break
 
             # Read inbox messages (log them for visibility)
@@ -283,6 +383,23 @@ class TeamLeader:
                         "summary": msg.get("summary", ""),
                         "content": msg["content"][:500],
                     })
+
+            fresh_available = sorted(available_unassigned_ids - seen_available_unassigned)
+            if fresh_available:
+                try:
+                    self._resume_dispatch_for_available_tasks(fresh_available)
+                except Exception as exc:
+                    self.logger.log_error(
+                        f"Failed to resume dispatch for available tasks {fresh_available}: {exc}",
+                        {},
+                    )
+                finally:
+                    seen_available_unassigned.difference_update(fresh_available)
+                continue
+            seen_available_unassigned.intersection_update(available_unassigned_ids)
+
+            if self.agent_manager.active_count == 0:
+                break
 
             # Check for dead processes with orphaned tasks
             process_status = self.agent_manager.get_status()

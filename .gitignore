@@ -27,3 +27,6 @@ Thumbs.db
 .env
 
 open_teams.json
+
+# Project files
+workspace/
