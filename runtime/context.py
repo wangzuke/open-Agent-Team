@@ -254,10 +254,20 @@ class RuntimeContext:
         content = message.get("content", "")
         if not isinstance(content, list):
             return False
-        return all(
-            isinstance(block, dict) and block.get("type") == "tool_result"
-            for block in content
-        )
+        if not content:
+            return False
+        has_tool_result = False
+        for block in content:
+            if not isinstance(block, dict):
+                return False
+            block_type = block.get("type")
+            if block_type == "tool_result":
+                has_tool_result = True
+                continue
+            if block_type == "text":
+                continue
+            return False
+        return has_tool_result
 
     def _summarize_segments(self, segments: list[list[dict[str, Any]]]) -> str:
         lines = [

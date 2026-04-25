@@ -1,164 +1,156 @@
-# open-teams
+<div align="center">
 
-一个基于 Claude API 的多智能体协作编程系统。通过自然语言创建团队，由 Team Leader 自动拆解任务、派生队友、分配工作，多个 Agent 独立并行地完成软件开发任务。
+# 🤝 open-teams
 
-## 架构
+**真正的多智能体协作运行时**
+
+*不是"一个 prompt 里假装有多个人"，而是真正的多进程并行执行*
+
+[![Python](https://img.shields.io/badge/Python-3.10+-3776AB?style=flat-square&logo=python&logoColor=white)](https://python.org)
+[![Anthropic](https://img.shields.io/badge/Anthropic-Claude-D97757?style=flat-square&logo=anthropic&logoColor=white)](https://anthropic.com)
+[![OpenAI](https://img.shields.io/badge/OpenAI-Compatible-412991?style=flat-square&logo=openai&logoColor=white)](https://openai.com)
+[![License](https://img.shields.io/badge/License-MIT-22C55E?style=flat-square)](LICENSE)
+
+</div>
+
+---
+
+## 这是什么
+
+`open-teams` 是一个面向真实软件开发任务的多智能体协作框架，灵感来自 Claude Code 的 agent-teams 模式。
+
+它让一个 `team-lead` 真正去**组建团队、拆解任务、派发工作、处理依赖、监控进度**，并把整个协作过程落盘到可追踪的运行时工作区。
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                        用户                              │
-│                    (自然语言输入)                          │
-└────────────────────────┬────────────────────────────────┘
-                         │
-                         ▼
-┌─────────────────────────────────────────────────────────┐
-│                    Team Leader                           │
-│              (主进程, claude-opus-4-6)                    │
-│                                                         │
-│  ┌─────────┐  ┌──────────┐  ┌──────────┐  ┌─────────┐  │
-│  │ 理解需求 │→│ 拆解任务  │→│ 派生队友  │→│ 分配任务 │  │
-│  └─────────┘  └──────────┘  └──────────┘  └─────────┘  │
-│                      │              │            │       │
-│              ┌───────┴──────┐       │      ┌─────┴────┐ │
-│              │   任务面板    │       │      │   邮箱   │ │
-│              │  (文件系统)   │       │      │ (文件系统)│ │
-│              └───────┬──────┘       │      └─────┬────┘ │
-└──────────────────────┼──────────────┼────────────┼──────┘
-                       │              │            │
-          ┌────────────┼──────────────┼────────────┼────────────┐
-          │            ▼              ▼            ▼            │
-          │  ┌──────────────┐ ┌──────────────┐ ┌────────────┐  │
-          │  │  Coder Agent │ │Researcher    │ │Tester Agent│  │
-          │  │  (独立进程)   │ │Agent(独立进程)│ │ (独立进程)  │  │
-          │  │  sonnet-4-6  │ │ sonnet-4-6   │ │ sonnet-4-6 │  │
-          │  └──────────────┘ └──────────────┘ └────────────┘  │
-          │                    Teammates                        │
-          └─────────────────────────────────────────────────────┘
+you> 帮我做一个带登录和文章管理的 CMS
 ```
 
-## 核心模块
+```
+team-lead  ▶  分析需求，创建任务图
+           ▶  派生 architect / coder-backend / coder-frontend / tester
+           ▶  并行执行，依赖自动解锁
+           ▶  汇总结果
+```
 
-| 模块 | 路径 | 职责 |
-|------|------|------|
-| **Runtime** | `runtime/` | LLM query loop、Agent 上下文管理、消息模型 |
-| **Agents** | `agents/` | Agent 定义、多进程派生与生命周期、Leader 编排逻辑 |
-| **Coordination** | `coordination/` | 任务面板、邮箱通信、团队配置 |
-| **Tools** | `tools/` | 13 个工具：文件读写编辑、代码搜索、Shell、Agent 派生、通信、任务管理 |
-| **Prompts** | `prompts/` | 分层提示词系统：基础 + 角色 + 环境 + 协作指令 |
-| **Logging** | `logging/` | 按 Agent 独立的 JSONL 活动日志 |
+---
 
-## 安装
+## 核心设计
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                           User                              │
+└──────────────────────────────┬──────────────────────────────┘
+                               │
+                               ▼
+┌─────────────────────────────────────────────────────────────┐
+│                        Team Leader                          │
+│                      (main process)                         │
+│                                                             │
+│   Understand → Plan → Spawn → Assign → Monitor → Synthesize │
+└──────────────┬──────────────────────────────┬───────────────┘
+               │                              │
+               ▼                              ▼
+     ┌──────────────────┐            ┌──────────────────┐
+     │    Task Board    │            │     Mailbox      │
+     │   (file-based)   │            │   (file-based)   │
+     └────────┬─────────┘            └────────┬─────────┘
+              │                               │
+              └──────────────┬────────────────┘
+                             ▼
+        ┌────────────────────────────────────────────────┐
+        │           Teammates (subprocesses)             │
+        │                                                │
+        │  architect   coder-backend   coder-frontend    │
+        │  tester      reviewer        researcher        │
+        └────────────────────────────────────────────────┘
+```
+
+**四个核心原则：**
+
+| 原则 | 说明 |
+|------|------|
+| 🎯 Leader 编排，不包办 | Leader 负责规划和协调，不亲自写实现代码 |
+| ⚡ Worker 真正并行 | 每个 teammate 运行在独立子进程，有自己的 prompt / 工具集 / inbox |
+| 📁 文件系统是真相源 | 所有运行态落盘到 `.open_teams/`，无需数据库或消息队列 |
+| 🔒 Runtime 是约束层 | Prompt 做引导，Runtime 做状态管理、工具边界和自动协调 |
+
+---
+
+## 关键机制
+
+**📋 结构化任务派发**  
+`spawn_agent` 不是传一句话，而是完整的 briefing：`mission` / `task_ids` / `owned_paths` / `deliverables` / `definition_of_done` / `quality_bar`
+
+**🔗 依赖自动解锁**  
+任务完成 → 系统自动检查下游 → 向对应 owner 发送 `[TASK READY]` → 无需 prompt 自觉
+
+**📬 Inbox 自动投递**  
+后台线程轮询 unread 消息，在安全时机注入上下文，接近事件驱动而非高成本轮询
+
+**⏳ Worker 预等待**  
+Worker 启动后先等任务真正 ready 再进入 LLM loop，避免无效 token 消耗
+
+**🗜️ 上下文压缩**  
+内建 token budget + 上下文压缩，长任务不失控
+
+---
+
+## 快速开始
+
+### 安装
 
 ```bash
-# Python >= 3.10
-
-# 安装依赖
-pip install anthropic>=0.40.0 openai>=1.0.0
-
-# 或从项目安装
-cd open_teams
 pip install -e .
 ```
 
-**依赖说明：**
-- `anthropic` — Anthropic Claude API 客户端
-- `openai` — OpenAI 兼容 API 客户端（覆盖 OpenAI、DeepSeek、Qwen、vLLM、Ollama 等）
-- 标准库：`multiprocessing`, `subprocess`, `threading`, `json`, `pathlib`, `re`（无需额外安装）
-
-## 配置
-
-open-teams 支持三种配置方式，优先级从高到低：**命令行参数 > 配置文件 > 环境变量 > 默认值**。
-
-### 配置文件（推荐）
-
-生成默认配置文件：
+### 配置
 
 ```bash
 python -m open_teams.main --init-config
 ```
 
-这会在 `open_teams/` 包目录下创建 `open_teams.json`：
+编辑生成的 `open_teams.json`：
 
 ```json
 {
   "provider": "anthropic",
-  "api_key": "",
-  "base_url": null,
+  "api_key": "your-api-key",
   "leader_model": "claude-opus-4-6",
-  "default_model": "claude-sonnet-4-6",
-  "max_tokens": 16384,
-  "max_turns": 200,
-  "max_agent_turns": 200,
-  "temperature": 0.0,
-  "team_name": "default",
-  "project_root": "workspace"
+  "default_model": "claude-sonnet-4-6"
 }
 ```
 
-当 `project_root` 配置为 `workspace` 时，启动时会在 `open_teams/workspace/` 下自动创建新的项目目录，
-目录名形如 `proj_20260424_153000`，并把运行时元数据写到该项目目录下的 `.open_teams/`。
-
-也可以手动创建配置文件：在 `open_teams/` 包目录下创建 `open_teams.json`，按上述格式填写配置即可。
-```
-
-**配置字段说明：**
-
-| 字段 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
-| `provider` | string | `"anthropic"` | LLM 提供商：`"anthropic"` 或 `"openai"` |
-| `api_key` | string | `""` | API 密钥 |
-| `base_url` | string/null | `null` | API 地址覆盖（用于代理或第三方服务） |
-| `leader_model` | string | `"claude-opus-4-6"` | Team Leader 使用的模型 |
-| `default_model` | string | `"claude-sonnet-4-6"` | Teammate 默认模型 |
-| `max_tokens` | int | `16384` | 单次 API 调用最大 token 数 |
-| `max_turns` | int | `200` | Leader 最大对话轮次 |
-| `max_agent_turns` | int | `200` | 每个 Teammate 最大对话轮次 |
-| `temperature` | float | `0.0` | 采样温度 |
-| `team_name` | string | `"default"` | 团队名称 |
-| `project_root` | string | `workspace` | 项目根目录配置。默认会把它当作项目容器目录，并在其下自动创建 `proj_<时间戳>` 项目目录 |
-
-也可以指定配置文件路径：
+### 启动
 
 ```bash
-python -m open_teams.main --config /path/to/my_config.json
+# 交互模式
+python -m open_teams.main --project-root ./workspace
+
+# 单次任务
+python -m open_teams.main -m "帮我实现一个 REST API 服务" --project-root ./workspace
 ```
 
-### 环境变量
-
-```bash
-# Anthropic
-export ANTHROPIC_API_KEY="your-api-key"
-export ANTHROPIC_BASE_URL="https://your-proxy.example.com"  # 可选
-
-# 或 OpenAI 兼容（自动切换 provider 为 openai）
-export OPENAI_API_KEY="your-api-key"
-export OPENAI_BASE_URL="https://api.deepseek.com/v1"  # 可选
-```
-
-### 命令行参数
+### 内置命令
 
 ```
---config          配置文件路径（默认 open_teams/open_teams.json）
---init-config     在 open_teams/ 包目录下生成默认配置文件并退出
---project-root    项目根目录（默认容器目录为 open_teams/workspace；会自动创建 proj_<时间戳>）
---team-name       团队名称（默认 "default"）
---provider        LLM 提供商：anthropic / openai
---leader-model    Leader 使用的模型
---teammate-model  Teammate 使用的模型
---api-key         API 密钥
---base-url        API 地址覆盖
---max-tokens      单次 API 调用最大 token 数
---max-agent-turns 每个 Agent 最大轮次
---temperature     采样温度
--m, --message     单次执行模式，传入消息后自动退出
+/status   团队总览
+/tasks    任务板
+/agents   agent 状态
+/config   当前配置
+/quit     退出
 ```
 
-## 第三方 API 支持
+---
 
-open-teams 支持两大类 LLM 提供商：
+## Provider 支持
 
-### Anthropic（默认）
+`openai` provider 兼容所有 OpenAI-compatible API：
 
+<table>
+<tr>
+<td>
+
+**Anthropic**
 ```json
 {
   "provider": "anthropic",
@@ -168,21 +160,10 @@ open-teams 支持两大类 LLM 提供商：
 }
 ```
 
-### OpenAI 兼容
+</td>
+<td>
 
-支持任何实现了 OpenAI Chat Completions API 的服务：
-
-**OpenAI:**
-```json
-{
-  "provider": "openai",
-  "api_key": "sk-xxx",
-  "leader_model": "gpt-4o",
-  "default_model": "gpt-4o-mini"
-}
-```
-
-**DeepSeek:**
+**DeepSeek**
 ```json
 {
   "provider": "openai",
@@ -193,7 +174,25 @@ open-teams 支持两大类 LLM 提供商：
 }
 ```
 
-**本地模型（Ollama / vLLM）：**
+</td>
+</tr>
+<tr>
+<td>
+
+**OpenAI**
+```json
+{
+  "provider": "openai",
+  "api_key": "sk-xxx",
+  "leader_model": "gpt-4o",
+  "default_model": "gpt-4o-mini"
+}
+```
+
+</td>
+<td>
+
+**本地模型 (Ollama)**
 ```json
 {
   "provider": "openai",
@@ -204,232 +203,57 @@ open-teams 支持两大类 LLM 提供商：
 }
 ```
 
-系统自动处理 Anthropic 和 OpenAI 之间的消息格式、工具调用格式的转换，上层代码无需关心底层差异。
+</td>
+</tr>
+</table>
 
-## 使用
+---
 
-### 交互模式
+## 运行时目录
 
-```bash
-python -m open_teams.main --project-root /path/to/your/project
-```
-
-进入交互式 REPL 后，直接用自然语言描述需求：
-
-```
-you> 帮我实现一个 REST API，包含用户注册、登录和个人信息管理功能
-
-team-lead> 我来分析这个需求并组建团队...
-           [创建任务面板]
-           [派生 coder-backend, coder-auth, tester-api]
-           [分配任务并监控进度]
-           ...
-```
-
-### 内置命令
-
-| 命令 | 说明 |
-|------|------|
-| `/status` | 查看团队总览（任务统计、Agent 状态） |
-| `/tasks` | 查看任务面板 |
-| `/agents` | 查看各 Agent 运行状态 |
-| `/config` | 查看当前配置 |
-| `/quit` | 退出 |
-
-### 单次执行模式
-
-```bash
-python -m open_teams.main -m "为项目添加单元测试" --project-root ./my-project
-```
-
-## 工作原理
-
-### 1. 用户提交需求
-
-用户用自然语言描述开发任务，Team Leader 接收并分析。
-
-### 2. Leader 规划
-
-Leader 使用工具探索项目结构，将需求拆解为多个子任务，建立任务依赖关系：
-
-```json
-{
-  "id": "1",
-  "subject": "实现用户模型",
-  "description": "在 src/models/ 下创建 User 模型...",
-  "status": "pending",
-  "owner": null,
-  "blocks": [],
-  "blockedBy": []
-}
-```
-
-### 3. 派生队友
-
-Leader 根据任务类型派生合适的 Agent，每个 Agent 运行在独立进程中：
-
-- **Coder** — 编写代码实现
-- **Researcher** — 探索代码库、分析架构
-- **Tester** — 编写测试、验证功能
-- **Reviewer** — 代码审查、质量保证
-
-### 4. 消息驱动的并行执行
-
-每个 Teammate 独立运行自己的 LLM query loop，通过消息驱动（而非轮询）发现和执行任务：
-
-1. **预等待**：Agent 启动后进入零 LLM 成本的等待状态，直到有可执行任务
-2. 收到 `[TASK READY]` 通知后开始工作
-3. 标记任务为 `in_progress`
-4. 使用工具完成工作（读写文件、搜索代码、执行命令）
-5. 标记任务为 `completed`（系统自动通知下游被阻塞的任务 owner）
-6. 通过邮箱向 Leader 报告结果
-
-### 5. 协调与通信
-
-```
-Coder-A ──邮箱──→ Team Leader ──邮箱──→ Coder-B
-                      │
-                 任务面板(共享)
-                      │
-              ┌───────┴───────┐
-              ▼               ▼
-         task_1.json     task_2.json
-```
-
-- **任务面板**：基于文件系统的共享任务板，FileLock 保证并发安全
-- **邮箱系统**：每个 Agent 独立的 JSON 收件箱，支持点对点和广播
-- **消息驱动**：后台线程每 1s 轮询 inbox，通过 queue 缓冲消息并在每轮 LLM 调用前注入
-- **依赖管理**：任务完成时自动解除下游任务的阻塞，并发送 `[TASK READY]` 通知
-
-### 6. 结果汇总
-
-所有任务完成后，Leader 读取产出物、运行验证，向用户呈现最终结果。
-
-## 工具集
-
-### 工具集合（13 个）
-
-| 工具 | 说明 |
-|------|------|
-| `read_file` | 读取文件内容（支持行号范围） |
-| `write_file` | 写入文件（自动创建目录） |
-| `edit_file` | 精确字符串替换 |
-| `glob_search` | 按 glob 模式搜索文件 |
-| `grep_search` | 按正则搜索文件内容 |
-| `shell` | 执行 Shell 命令 |
-| `spawn_agent` | **派生新的 Teammate Agent (Leader专属)** 
-| `send_message` | 向其他 Agent 发送消息 |
-| `task_create` | 创建任务 |
-| `task_update` | 更新任务状态/分配（完成时自动通知下游） |
-| `task_list` | 列出所有任务 |
-| `task_get` | 获取任务详情 |
-
-
-## 项目结构
-
-```
-open_teams/
-├── __init__.py
-├── main.py                  # CLI 入口 & REPL
-├── config.py                # 全局配置
-├── setup.py                 # 包安装配置
-├── requirements.txt
-│
-├── runtime/                 # 核心运行时
-│   ├── engine.py            # QueryEngine — LLM 交互循环 + 后台 inbox 轮询
-│   ├── context.py           # RuntimeContext — 可克隆的 Agent 上下文
-│   ├── llm_client.py        # LLM 客户端抽象层（Anthropic + OpenAI）
-│   └── models.py            # Message, ToolCall, ToolResult 等数据模型
-│
-├── agents/                  # Agent 系统
-│   ├── definition.py        # AgentDefinition 定义规格
-│   ├── manager.py           # AgentManager — 多进程派生与管理 + 预等待机制
-│   └── leader.py            # TeamLeader — 主编排 Agent
-│
-├── coordination/            # 协调层
-│   ├── task_board.py        # TaskBoard — 文件系统任务面板
-│   ├── mailbox.py           # Mailbox — 文件系统邮箱通信
-│   └── team.py              # TeamManager — 团队配置管理
-│
-├── tools/                   # 工具集
-│   ├── base.py              # Tool 抽象基类 & ToolRegistry
-│   ├── file_tools.py        # ReadFile / WriteFile / EditFile
-│   ├── search_tools.py      # Glob / Grep
-│   ├── shell_tool.py        # Shell 命令执行
-│   ├── agent_tool.py        # SpawnAgent（Leader 专属）
-│   ├── message_tool.py      # SendMessage 通信
-│   ├── task_tools.py        # TaskCreate / Update（含依赖通知） / List / Get
-│   └── registry.py          # 工具注册工厂
-│
-├── prompts/                 # 提示词系统
-│   ├── templates.py         # 基础/环境/工具/协作模板
-│   ├── roles.py             # Leader & 各角色提示词
-│   └── builder.py           # 分层提示词拼装器
-│
-├── logging/                 # 日志系统
-│   └── activity_logger.py   # JSONL 活动日志（线程安全）
-│
-└── utils/                   # 工具函数
-    ├── file_lock.py         # 跨进程文件锁
-    └── helpers.py           # ID 生成、时间戳、JSON 读写
-```
-
-## 关键设计决策
-
-### 独立进程隔离
-
-每个 Teammate 运行在独立的 `multiprocessing.Process` 中，拥有：
-- 独立的 LLM query loop
-- 独立的消息历史
-- 独立的工具上下文
-- 独立的 abort 控制
-
-这保证了 Agent 间不会互相阻塞或干扰。
-
-### 文件系统作为共享状态
-
-任务面板和邮箱都基于文件系统实现，而非内存共享：
-- 天然支持多进程并发
-- `FileLock` 保证原子操作
-- 状态持久化，进程崩溃不丢失
-- 调试友好，可直接查看 JSON 文件
-
-### 分层提示词
-
-```
-最终 System Prompt = 基础提示词
-                   + 角色提示词 (Leader / Coder / Tester / ...)
-                   + 环境信息 (路径、平台、日期、工具列表)
-                   + 工具使用指南
-                   + 协作协议
-```
-
-### 工具权限隔离
-
-Leader 拥有 `spawn_agent` 等管理工具，Teammate 只能使用开发工具和通信工具，防止 Agent 越权操作。团队创建由程序化完成（`_setup_team`），不暴露为 LLM 工具，避免重复创建。
-
-### 消息驱动的任务发现
-
-Agent 不通过轮询 `task_list` 发现任务，而是通过三层消息机制：
-
-1. **后台 inbox 轮询线程**：daemon 线程每 1s 检查 inbox，将消息推入 `queue.Queue`，主循环每轮 LLM 调用前 drain 注入为 `[INBOX]` user turn
-2. **任务就绪通知**：Agent 调用 `task_update(status="completed")` 时，系统自动检测新解锁的下游任务并发送 `[TASK READY]` 消息
-3. **预等待**：Worker 进程启动后在进入 LLM loop 之前先阻塞等待可执行任务（纯 Python sleep，零 LLM 成本）
-
-## 运行时数据
-
-系统运行时在项目根目录下创建 `.open_teams/` 目录，所有运行时数据直接存放其中：
+每次运行在项目目录下生成 `.open_teams/`，这是调试的第一现场：
 
 ```
 .open_teams/
-├── teams/{team_name}/config.json            # 团队配置与成员列表
-├── tasks/{team_name}/task_*.json            # 任务文件（每任务一个 JSON）
-├── inboxes/{team_name}/{agent}.json         # Agent 邮箱
-└── logs/{team_name}/{agent}.jsonl           # 活动日志
+├── teams/{team_name}/config.json       # 团队元数据
+├── tasks/{team_name}/task_*.json       # 任务板（每任务一个 JSON）
+├── inboxes/{team_name}/{agent}.json    # agent 邮箱
+└── logs/{team_name}/{agent}.jsonl      # JSONL 活动日志
 ```
 
-配置文件位于 `open_teams/open_teams.json`（包目录下），不在 `.open_teams/` 中。
+任务卡住了？Worker 没响应？依赖没解锁？直接看这里。
 
-## 许可证
+---
 
-MIT
+## 仓库结构
+
+```
+open_teams/
+├── agents/          # team-lead 与 worker 生命周期管理
+├── coordination/    # task board / mailbox / team metadata
+├── prompts/         # leader / teammate prompt 组装
+├── runtime/         # query engine / context / llm client
+├── tools/           # 文件、搜索、shell、git、任务、通信、spawn
+├── utils/           # 文件锁、安全与辅助逻辑
+├── logging/         # JSONL 活动日志
+├── doc/             # 架构说明
+├── AGENT.md         # 面向开发者的源码导览
+├── config.py        # 全局配置
+├── main.py          # CLI 入口
+└── setup.py
+```
+
+---
+
+## 文档
+
+- [AGENT.md](AGENT.md) — 面向开发者的源码导览
+- [架构与技术分享](doc/open_teams架构与技术分享.md) — 设计决策说明
+
+---
+
+<div align="center">
+
+如果你对 **multi-agent orchestration**、**task coordination**、**agent collaboration protocol** 感兴趣，这个项目值得深入看一遍。
+
+</div>

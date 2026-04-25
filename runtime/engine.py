@@ -258,6 +258,34 @@ class QueryEngine:
                 break
         return messages
 
+    def _dedupe_inbox_messages(self, messages: list[dict]) -> list[dict]:
+        """Deduplicate inbox messages while preserving order."""
+        deduped: list[dict] = []
+        seen_ids: set[str] = set()
+        for message in messages:
+            message_id = str(message.get("id") or "").strip()
+            if message_id:
+                if message_id in seen_ids:
+                    continue
+                seen_ids.add(message_id)
+            deduped.append(message)
+        return deduped
+
+    def _read_unread_inbox_messages(self) -> list[dict]:
+        """Read unread inbox messages directly from the mailbox."""
+        team_name = self.context.agent_identity.team_name
+        agent_name = self.context.agent_identity.agent_name
+        if not team_name:
+            return []
+        try:
+            from open_teams.coordination.mailbox import Mailbox
+
+            mailbox = Mailbox(self.context.config, team_name)
+            return mailbox.read_inbox(agent_name, unread_only=True)
+        except Exception as exc:
+            self.logger.debug("_read_unread_inbox_messages error: %s", exc)
+            return []
+
     def _format_inbox_messages(self, messages: list[dict]) -> str:
         """Format full inbox messages for persistent context injection."""
         lines = [f"[INBOX]\nYou have {len(messages)} new message(s)."]
@@ -297,13 +325,69 @@ class QueryEngine:
                 self._queued_inbox_ids.discard(message_id)
             self._inbox_queue.put(message)
 
-    def _inject_inbox_messages(self) -> tuple[list[dict], str]:
+    def collect_pending_inbox_messages(self) -> list[dict]:
+        """Collect unread inbox messages, mark them read, and return them."""
+        messages = self._drain_inbox_queue()
+        messages.extend(self._read_unread_inbox_messages())
+        messages = self._dedupe_inbox_messages(messages)
+        if not messages:
+            return []
+
+        self._mark_inbox_messages_read(messages)
+        if self.activity_logger:
+            self.activity_logger.log_event(
+                "inbox_collected",
+                {
+                    "count": len(messages),
+                    "from": [m.get("from_agent") for m in messages],
+                    "ids": [m.get("id") for m in messages],
+                },
+            )
+        return messages
+
+    def _append_inbox_to_pending_tool_results(self, injected_content: str) -> bool:
+        """Append inbox text to the current tool-result continuation turn."""
+        if not injected_content or not self.context.messages:
+            return False
+
+        last_message = self.context.messages[-1]
+        content = last_message.get("content", "")
+        if last_message.get("role") != "user" or not isinstance(content, list):
+            return False
+
+        has_tool_result = False
+        for block in content:
+            if not isinstance(block, dict):
+                return False
+            block_type = block.get("type")
+            if block_type == "tool_result":
+                has_tool_result = True
+                continue
+            if block_type == "text":
+                continue
+            return False
+
+        if not has_tool_result:
+            return False
+
+        content.append({"type": "text", "text": injected_content})
+        return True
+
+    def _inject_inbox_messages(self) -> tuple[list[dict], str, str]:
         """Inject queued inbox messages into persistent history."""
         messages = self._drain_inbox_queue()
+        messages.extend(self._read_unread_inbox_messages())
+        messages = self._dedupe_inbox_messages(messages)
         if not messages:
-            return [], ""
+            return [], "", ""
+
         injected_content = self._format_inbox_messages(messages)
-        self.context.add_user_message(injected_content)
+        injection_mode = "new_user_message"
+        if self._append_inbox_to_pending_tool_results(injected_content):
+            injection_mode = "tool_result_continuation"
+        else:
+            self.context.add_user_message(injected_content)
+
         if self.activity_logger:
             self.activity_logger.log_event(
                 "inbox_injected",
@@ -311,20 +395,39 @@ class QueryEngine:
                     "count": len(messages),
                     "from": [m.get("from_agent") for m in messages],
                     "ids": [m.get("id") for m in messages],
+                    "mode": injection_mode,
                 },
             )
-        return messages, injected_content
+        return messages, injected_content, injection_mode
 
-    def _rollback_inbox_injection(self, injected_content: str) -> None:
+    def _rollback_inbox_injection(self, injected_content: str, injection_mode: str) -> None:
         """Remove the most recent injected inbox message from history."""
-        if not injected_content or not self.context.messages:
+        if not injected_content or not injection_mode or not self.context.messages:
             return
+
         last_message = self.context.messages[-1]
+        if injection_mode == "new_user_message":
+            if (
+                last_message.get("role") == "user"
+                and last_message.get("content") == injected_content
+            ):
+                self.context.messages.pop()
+            return
+
+        content = last_message.get("content", "")
         if (
-            last_message.get("role") == "user"
-            and last_message.get("content") == injected_content
+            injection_mode == "tool_result_continuation"
+            and last_message.get("role") == "user"
+            and isinstance(content, list)
+            and content
         ):
-            self.context.messages.pop()
+            last_block = content[-1]
+            if (
+                isinstance(last_block, dict)
+                and last_block.get("type") == "text"
+                and last_block.get("text") == injected_content
+            ):
+                content.pop()
 
     def _has_pending_tool_continuation(self) -> bool:
         """Return True when the next turn should first consume tool results."""
@@ -334,10 +437,20 @@ class QueryEngine:
         content = last_message.get("content", "")
         if last_message.get("role") != "user" or not isinstance(content, list):
             return False
-        return all(
-            isinstance(block, dict) and block.get("type") == "tool_result"
-            for block in content
-        )
+        if not content:
+            return False
+        has_tool_result = False
+        for block in content:
+            if not isinstance(block, dict):
+                return False
+            block_type = block.get("type")
+            if block_type == "tool_result":
+                has_tool_result = True
+                continue
+            if block_type == "text":
+                continue
+            return False
+        return has_tool_result
 
     # ------------------------------------------------------------------
     # Main agentic loop
@@ -411,9 +524,9 @@ class QueryEngine:
 
             delivered_inbox_messages: list[dict] = []
             injected_inbox_content = ""
+            inbox_injection_mode = ""
             try:
-                if not self._has_pending_tool_continuation():
-                    delivered_inbox_messages, injected_inbox_content = self._inject_inbox_messages()
+                delivered_inbox_messages, injected_inbox_content, inbox_injection_mode = self._inject_inbox_messages()
 
                 input_token_estimate = ctx.estimate_token_count()
                 result = self.run_turn(stream_callback=stream_callback)
@@ -487,7 +600,7 @@ class QueryEngine:
                     break
             except Exception:
                 if delivered_inbox_messages:
-                    self._rollback_inbox_injection(injected_inbox_content)
+                    self._rollback_inbox_injection(injected_inbox_content, inbox_injection_mode)
                     self._requeue_inbox_messages(delivered_inbox_messages)
                 raise
 

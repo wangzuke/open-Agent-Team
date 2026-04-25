@@ -66,6 +66,7 @@ class TeamLeader:
         )
 
         self.engine = QueryEngine(self.context, activity_logger=self.logger)
+        self._collected_inbox_messages: list[dict[str, Any]] = []
         self._original_execute_tools = self.engine.execute_tools
 
         def _hooked_execute_tools(tool_calls):
@@ -322,6 +323,30 @@ class TeamLeader:
             "members": members,
         }
 
+    def _remember_inbox_messages(self, messages: list[dict[str, Any]]) -> None:
+        """Keep consumed inbox messages available for final synthesis."""
+        if not messages:
+            return
+
+        seen_ids = {
+            str(message.get("id") or "").strip()
+            for message in self._collected_inbox_messages
+            if str(message.get("id") or "").strip()
+        }
+        for message in messages:
+            message_id = str(message.get("id") or "").strip()
+            if message_id and message_id in seen_ids:
+                continue
+            self._collected_inbox_messages.append(message)
+            if message_id:
+                seen_ids.add(message_id)
+
+    def _drain_leader_inbox(self) -> list[dict[str, Any]]:
+        """Collect and remember leader inbox messages that were just consumed."""
+        messages = self.engine.collect_pending_inbox_messages()
+        self._remember_inbox_messages(messages)
+        return messages
+
     def wait_for_completion(
         self,
         timeout: float = 600,
@@ -370,7 +395,7 @@ class TeamLeader:
                 break
 
             # Read inbox messages (log them for visibility)
-            messages = self.mailbox.read_inbox(self.agent_name, unread_only=True)
+            messages = self._drain_leader_inbox()
             if messages:
                 for msg in messages:
                     message_id = msg.get("id")
@@ -553,15 +578,14 @@ class TeamLeader:
         """Collect completion reports and wake Leader LLM for final synthesis."""
         self.logger.log_event("synthesis_started")
 
-        messages = self.mailbox.read_inbox(self.agent_name, unread_only=True)
-        if messages:
-            self.mailbox.mark_as_read(self.agent_name, [m["id"] for m in messages])
-
+        self._drain_leader_inbox()
         tasks = self.task_board.list_tasks()
+        messages = list(self._collected_inbox_messages)
         prompt = self._build_synthesis_prompt(tasks, messages)
         self.context.add_user_message(prompt)
 
         result = self.engine.run_loop(stream_callback=stream_callback)
+        self._collected_inbox_messages = []
         self.logger.log_message("assistant", result)
         self.logger.log_event("synthesis_completed")
         return result
