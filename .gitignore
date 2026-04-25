@@ -30,3 +30,9 @@ open_teams.json
 
 # Project files
 workspace/
+
+#My Docs
+my_docs/
+
+#
+AGENT.md
