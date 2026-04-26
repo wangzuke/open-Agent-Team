@@ -1,4 +1,4 @@
-"""CLI entry point for open-teams."""
+"""CLI entry point for open_Agent_Team."""
 
 from __future__ import annotations
 
@@ -10,22 +10,25 @@ import sys
 import signal
 from pathlib import Path
 
+sys.dont_write_bytecode = True
+os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
+
 if __package__ in (None, ""):
     package_dir = Path(__file__).resolve().parent
-    package_parent = package_dir.parent
     if sys.path:
-        sys.path[0] = str(package_parent)
+        sys.path[0] = str(package_dir)
     else:
-        sys.path.insert(0, str(package_parent))
+        sys.path.insert(0, str(package_dir))
 
-from open_teams.config import (
+from config import (
     load_and_init_config,
     OpenTeamsConfig,
     CONFIG_FILE_NAME,
+    LEGACY_CONFIG_FILE_NAMES,
     PACKAGE_DIR,
     DEFAULT_WORKSPACE_BASE,
 )
-from open_teams.agents.leader import TeamLeader
+from agents.leader import TeamLeader
 
 
 def _print_progress(info: dict):
@@ -43,14 +46,14 @@ def _stream_text(chunk: str):
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        prog="open-teams",
+        prog="open_Agent_Team",
         description="Multi-agent collaborative coding system",
     )
     parser.add_argument(
         "--config",
         type=str,
         default=None,
-        help=f"Path to JSON config file (default: .open_teams/{CONFIG_FILE_NAME})",
+        help=f"Path to JSON config file (default: {CONFIG_FILE_NAME}, with legacy fallback)",
     )
     parser.add_argument(
         "--init-config",
@@ -188,7 +191,7 @@ def generate_default_config(path: Path):
 
 def print_banner(config: OpenTeamsConfig):
     print("=" * 60)
-    print("  open-teams: Multi-Agent Collaborative Coding System")
+    print("  open_Agent_Team: Multi-Agent Collaborative Coding System")
     print("=" * 60)
     print(f"  Provider: {config.provider}")
     print(f"  Leader:   {config.leader_model}")
@@ -237,10 +240,6 @@ def format_tasks(leader: TeamLeader) -> str:
 
 
 def main():
-    import sys as _sys
-    _sys.dont_write_bytecode = True
-    os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
-
     args = parse_args()
 
     # --init-config: generate default config and exit
@@ -294,11 +293,14 @@ def main():
     if not config.api_key:
         print("Error: No API key configured.")
         print("Set it via one of:")
-        print(f"  1. \"api_key\" in {PACKAGE_DIR / CONFIG_FILE_NAME}")
+        known_paths = [PACKAGE_DIR / name for name in LEGACY_CONFIG_FILE_NAMES]
+        print(f"  1. \"api_key\" in {known_paths[0]}")
+        for extra_path in known_paths[1:]:
+            print(f"     or legacy config file {extra_path}")
         print("  2. ANTHROPIC_API_KEY or OPENAI_API_KEY environment variable")
         print("  3. --api-key command-line flag")
         print()
-        print(f"Run 'python -m open_teams.main --init-config' to generate a config file.")
+        print("Run 'python main.py --init-config' or 'python -m main --init-config' to generate a config file.")
         sys.exit(1)
 
     leader = TeamLeader(config, team_name=config.team_name)

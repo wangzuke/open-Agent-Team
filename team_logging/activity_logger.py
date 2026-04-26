@@ -1,11 +1,13 @@
-"""Thread-safe JSONL activity logger for open-teams agents."""
+"""Thread-safe JSONL activity logger for open_Agent_Team agents."""
+
+from __future__ import annotations
 
 import json
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
-from open_teams.config import OpenTeamsConfig
+from config import OpenTeamsConfig
 
 
 class ActivityLogger:
@@ -16,10 +18,6 @@ class ActivityLogger:
         self.log_path: Path = config.agent_log_path(team_name, agent_name)
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
-
-    # ------------------------------------------------------------------
-    # Internal helpers
-    # ------------------------------------------------------------------
 
     def _write_line(self, data: dict) -> None:
         """Serialize *data* as JSON and append it to the log file."""
@@ -34,10 +32,6 @@ class ActivityLogger:
         if len(text) > max_len:
             return text[:max_len] + "..."
         return text
-
-    # ------------------------------------------------------------------
-    # Public logging methods
-    # ------------------------------------------------------------------
 
     def log_tool_call(
         self,

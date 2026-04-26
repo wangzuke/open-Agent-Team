@@ -26,7 +26,7 @@ Thumbs.db
 # Environment variables
 .env
 
-open_teams.json
+open_Agent_Team.json
 
 # Project files
 workspace/

@@ -7,9 +7,9 @@ from typing import Any, Optional, TYPE_CHECKING
 from .base import Tool
 
 if TYPE_CHECKING:
-    from open_teams.config import OpenTeamsConfig
-    from open_teams.coordination.mailbox import Mailbox
-    from open_teams.coordination.team import TeamManager
+    from config import OpenTeamsConfig
+    from coordination.mailbox import Mailbox
+    from coordination.team import TeamManager
 
 
 class SendMessageTool(Tool):
@@ -59,7 +59,7 @@ class SendMessageTool(Tool):
                 raise RuntimeError(
                     "SendMessageTool: set_context() must be called before execute()."
                 )
-            from open_teams.coordination.mailbox import Mailbox
+            from coordination.mailbox import Mailbox
             self._mailbox = Mailbox(self._config, self._team_name)
         return self._mailbox
 
@@ -69,7 +69,7 @@ class SendMessageTool(Tool):
                 raise RuntimeError(
                     "SendMessageTool: set_context() must be called before execute()."
                 )
-            from open_teams.coordination.team import TeamManager
+            from coordination.team import TeamManager
             self._team_manager = TeamManager(self._config)
         return self._team_manager
 
@@ -147,7 +147,7 @@ class CheckInboxTool(Tool):
                 raise RuntimeError(
                     "CheckInboxTool: set_context() must be called before execute()."
                 )
-            from open_teams.coordination.mailbox import Mailbox
+            from coordination.mailbox import Mailbox
             self._mailbox = Mailbox(self._config, self._team_name)
         return self._mailbox
 

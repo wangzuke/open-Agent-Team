@@ -6,8 +6,8 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from open_teams.config import OpenTeamsConfig
-from open_teams.utils.security import SandboxViolation, validate_shell_command
+from config import OpenTeamsConfig
+from utils.security import SandboxViolation, validate_shell_command
 
 from .base import Tool
 

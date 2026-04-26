@@ -9,8 +9,8 @@ from typing import Any, Optional, TYPE_CHECKING
 from .base import Tool
 
 if TYPE_CHECKING:
-    from open_teams.config import OpenTeamsConfig
-    from open_teams.coordination.task_board import TaskBoard
+    from config import OpenTeamsConfig
+    from coordination.task_board import TaskBoard
 
 
 def _format_list_block(label: str, values: list[str]) -> list[str]:
@@ -182,7 +182,7 @@ class TaskCreateTool(Tool):
                 raise RuntimeError(
                     "TaskCreateTool: set_context() must be called before execute()."
                 )
-            from open_teams.coordination.task_board import TaskBoard
+            from coordination.task_board import TaskBoard
             self._board = TaskBoard(self._config, self._team_name)
         return self._board
 
@@ -298,7 +298,7 @@ class TaskUpdateTool(Tool):
                 raise RuntimeError(
                     "TaskUpdateTool: set_context() must be called before execute()."
                 )
-            from open_teams.coordination.task_board import TaskBoard
+            from coordination.task_board import TaskBoard
             self._board = TaskBoard(self._config, self._team_name)
         return self._board
 
@@ -339,7 +339,7 @@ class TaskUpdateTool(Tool):
         if not tasks or not self._config or not self._team_name:
             return
         try:
-            from open_teams.coordination.mailbox import Mailbox
+            from coordination.mailbox import Mailbox
             mailbox = Mailbox(self._config, self._team_name)
             sender = self._agent_name or "system"
             for task in tasks:
@@ -401,7 +401,7 @@ class TaskListTool(Tool):
                 raise RuntimeError(
                     "TaskListTool: set_context() must be called before execute()."
                 )
-            from open_teams.coordination.task_board import TaskBoard
+            from coordination.task_board import TaskBoard
             self._board = TaskBoard(self._config, self._team_name)
         return self._board
 
@@ -466,7 +466,8 @@ class TaskGetTool(Tool):
         self.name = "task_get"
         self.description = (
             "Get the full details of one specific task. Use this when you need the complete brief before acting, "
-            "especially after receiving a task ID in a spawn brief or a [TASK READY] message."
+            "especially after receiving a task ID in a spawn brief or a [TASK READY] message. "
+            "Do not use this tool as a heartbeat or progress-polling loop."
         )
         self.input_schema = {
             "type": "object",
@@ -481,6 +482,7 @@ class TaskGetTool(Tool):
         self._team_name: Optional[str] = None
         self._config: Optional["OpenTeamsConfig"] = None
         self._board: Optional["TaskBoard"] = None
+        self._last_fingerprint_by_task: dict[str, str] = {}
 
     def set_context(self, team_name: str, config: "OpenTeamsConfig") -> None:
         self._team_name = team_name
@@ -493,7 +495,7 @@ class TaskGetTool(Tool):
                 raise RuntimeError(
                     "TaskGetTool: set_context() must be called before execute()."
                 )
-            from open_teams.coordination.task_board import TaskBoard
+            from coordination.task_board import TaskBoard
             self._board = TaskBoard(self._config, self._team_name)
         return self._board
 
@@ -511,4 +513,40 @@ class TaskGetTool(Tool):
         if task is None:
             return f"Error: Task '{task_id}' not found."
 
+        fingerprint = self._fingerprint(task)
+        if self._last_fingerprint_by_task.get(task_id) == fingerprint:
+            return (
+                f"No task changes since your last task_get for Task #{task_id}.\n"
+                f"Status: {task.get('status', '') or '(unknown)'}\n"
+                f"Owner: {task.get('owner') or '(unassigned)'}\n"
+                f"Updated: {task.get('updatedAt', '') or '(unknown)'}\n"
+                "Do not poll task_get repeatedly for progress. Wait for inbox updates, "
+                "task_update confirmations, dependency changes, or a real need to re-read the brief."
+            )
+
+        self._last_fingerprint_by_task[task_id] = fingerprint
         return _format_task(task)
+
+    def _fingerprint(self, task: dict[str, Any]) -> str:
+        payload = json.dumps(
+            {
+                "id": task.get("id"),
+                "subject": task.get("subject"),
+                "description": task.get("description"),
+                "status": task.get("status"),
+                "owner": task.get("owner"),
+                "agentType": task.get("agentType"),
+                "priority": task.get("priority"),
+                "blockedBy": task.get("blockedBy", []),
+                "blocks": task.get("blocks", []),
+                "deliverables": task.get("deliverables", []),
+                "acceptance": task.get("acceptance", []),
+                "constraints": task.get("constraints", []),
+                "interfaces": task.get("interfaces", []),
+                "handoff": task.get("handoff"),
+                "updatedAt": task.get("updatedAt"),
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        return hashlib.sha1(payload.encode("utf-8")).hexdigest()

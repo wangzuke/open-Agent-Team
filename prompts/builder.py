@@ -5,7 +5,7 @@ import platform
 from datetime import datetime, timezone
 from pathlib import Path
 
-from open_teams.config import OpenTeamsConfig
+from config import OpenTeamsConfig
 from . import templates, roles
 
 

@@ -10,7 +10,7 @@ from .base import Tool
 
 _IGNORED_DIR_NAMES = {
     ".git",
-    ".open_teams",
+    ".open_Agent_Team",
     ".pytest_cache",
     "__pycache__",
     "node_modules",

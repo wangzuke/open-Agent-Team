@@ -4,16 +4,21 @@ from __future__ import annotations
 
 import json
 import multiprocessing
+import os
+import sys
 import threading
 import time
 import traceback
 from pathlib import Path
 from typing import Any
 
-from open_teams.config import OpenTeamsConfig
-from open_teams.agents.definition import AgentDefinition
-from open_teams.runtime.models import AgentIdentity
-from open_teams.utils.helpers import generate_id, timestamp_now
+sys.dont_write_bytecode = True
+os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
+
+from config import OpenTeamsConfig
+from agents.definition import AgentDefinition
+from runtime.models import AgentIdentity
+from utils.helpers import generate_id, timestamp_now
 
 
 def _run_worker_process(
@@ -34,14 +39,14 @@ def _run_worker_process(
     os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
     os.chdir(working_dir)
 
-    from open_teams.config import init_config
-    from open_teams.runtime.context import RuntimeContext
-    from open_teams.runtime.engine import QueryEngine
-    from open_teams.runtime.models import AgentIdentity
-    from open_teams.tools import create_teammate_tools
-    from open_teams.prompts import SystemPromptBuilder
-    from open_teams.logging import ActivityLogger
-    from open_teams.coordination.mailbox import Mailbox
+    from config import init_config
+    from runtime.context import RuntimeContext
+    from runtime.engine import QueryEngine
+    from runtime.models import AgentIdentity
+    from tools import create_teammate_tools
+    from prompts import SystemPromptBuilder
+    from team_logging import ActivityLogger
+    from coordination.mailbox import Mailbox
 
     config = init_config(**config_dict)
 
@@ -123,7 +128,7 @@ def _run_worker_process(
             )
             summary = f"{agent_name} CRASHED: {crash_summary[:80]}"
         else:
-            from open_teams.coordination.task_board import TaskBoard
+            from coordination.task_board import TaskBoard
             completed, in_prog = [], []
             try:
                 board = TaskBoard(config, team_name)
@@ -169,7 +174,7 @@ def _wait_for_actionable_task(
     poll_interval: float = 2.0,
 ) -> None:
     """Block (zero LLM cost) until the agent has at least one non-blocked task."""
-    from open_teams.coordination.task_board import TaskBoard
+    from coordination.task_board import TaskBoard
 
     board = TaskBoard(config, team_name)
     start = time.monotonic()
@@ -301,7 +306,7 @@ class AgentManager:
             "streaming": False,
         }
 
-        from open_teams.coordination import TeamManager, Mailbox
+        from coordination import TeamManager, Mailbox
         tm = TeamManager(self.config)
         tm.add_member(
             self.team_name,
@@ -327,7 +332,7 @@ class AgentManager:
                 config_dict,
                 str(self.config.project_root),
             ),
-            name=f"open-teams-{name}",
+            name=f"open_Agent_Team-{name}",
             daemon=True,
         )
 

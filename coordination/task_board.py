@@ -8,9 +8,9 @@ import re
 from pathlib import Path
 from typing import Any, Optional
 
-from ..config import OpenTeamsConfig
-from ..utils.file_lock import FileLock
-from ..utils.helpers import generate_id, timestamp_now
+from config import OpenTeamsConfig
+from utils.file_lock import FileLock
+from utils.helpers import generate_id, timestamp_now
 
 
 class TaskBoard:

@@ -1,4 +1,4 @@
-# open-teams runtime dependencies
+# open_Agent_Team runtime dependencies
 # Python >= 3.10 required
 
 # LLM providers (at least one is required)

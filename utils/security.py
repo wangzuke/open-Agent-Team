@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from open_teams.config import OpenTeamsConfig
+from config import OpenTeamsConfig
 
 
 class SandboxViolation(RuntimeError):

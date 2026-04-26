@@ -1,4 +1,4 @@
-# 🤝 open-teams
+# 🤝 open-Agent-Team
 
 **真正的多智能体协作（multi-agent orchestration runtime）**
 
@@ -6,16 +6,15 @@
 [![Python](https://img.shields.io/badge/Python-3.10+-3776AB?style=flat-square\&logo=python\&logoColor=white)](https://python.org)
 [![Anthropic](https://img.shields.io/badge/Anthropic-Claude-D97757?style=flat-square\&logo=anthropic\&logoColor=white)](https://anthropic.com)
 [![OpenAI](https://img.shields.io/badge/OpenAI-Compatible-412991?style=flat-square\&logo=openai\&logoColor=white)](https://openai.com)
-[![License](https://img.shields.io/badge/License-MIT-22C55E?style=flat-square)](LICENSE)
 
 ---
 
-## 这是什么
+## What's open-Agent-Team
 
-`open-teams` 是一个面向真实软件开发任务的多智能体协作框架，灵感来自 Claude Code 的 agent-teams 模式。
-
+`open-Agent-Team` 是一个基于 Claude Code 的 Agent-Teams 模式所搭建的一个mulit-agent系统。
 它让一个 `team-lead` 真正具备**组织团队的能力**：组建团队、拆解任务、派发工作、管理依赖、监控进度，并将整个协作过程落盘到一个**可追踪的运行时工作区**中。
 
+参考文档：* [Agent_teams_introduction.md](docs/Agent_teams_introduction.md) — Agent-teams 架构设计介绍
 ```
 you> 帮我做一个带登录和文章管理的 CMS
 ```
@@ -70,7 +69,7 @@ team-lead  ▶  分析需求，构建任务图
 | ---------------- | ------------------------------------------------- |
 | 🎯 Leader 编排，不包办 | Leader 负责规划和协调，不直接参与具体实现                          |
 | ⚡ Worker 真正并行    | 每个 teammate 运行在独立子进程，拥有独立 prompt / 工具集 / inbox    |
-| 📁 文件系统是真相源      | 所有运行态落盘到 `.open_teams/`，作为 single source of truth |
+| 📁 文件系统是真相源      | 所有运行态落盘到 `.open_Agent_Team/`，作为 single source of truth |
 | 🔒 Runtime 是约束层  | Prompt 负责行为引导，Runtime 负责状态管理、工具边界和自动协调            |
 
 ---
@@ -97,7 +96,7 @@ Worker 启动后会等待任务真正 ready 再进入 LLM loop，避免无效 to
 
 ## Agent Teams vs Subagent
 
-`open-teams` 基于 **Agent Teams 架构**，而非传统的 Subagent 模式。
+`open_Agent_Team` 基于 Claude Code**Agent Teams 架构**，而非传统的 Subagent 模式。
 
 两者核心区别：
 
@@ -119,32 +118,65 @@ Worker 启动后会等待任务真正 ready 再进入 LLM loop，避免无效 to
 pip install -e .
 ```
 
+安装后可直接使用命令：
+
+```bash
+open_Agent_Team --help
+```
+
 ### 配置
 
 ```bash
-python -m open_teams.main --init-config
+python main.py --init-config
 ```
 
-编辑生成的 `open_teams.json`：
+也可以使用：
+
+```bash
+python -m main --init-config
+```
+
+编辑生成的 `open_Agent_Team.json`：
 
 ```json
 {
   "provider": "anthropic",
-  "base_url": "you-base-url",
   "api_key": "your-api-key",
-  "leader_model": "chose_your_model_for_leader",
-  "default_model": "chose_your_model_for_team"
+  "base_url": null,
+  "leader_model": "claude-opus-4-6",
+  "default_model": "claude-sonnet-4-6",
+  "team_name": "default",
+  "project_root": "workspace"
 }
 ```
+
+说明：
+
+- 默认配置文件名是 `open_Agent_Team.json`
+- 当前版本仍兼容读取旧文件名 `open_teams.json`
+- 如果 `project_root` 保持为默认的 `workspace`，运行时会自动创建 `workspace/proj_<timestamp>/`
 
 ### 启动
 
 ```bash
 # 交互模式
-python -m open_teams.main --project-root ./workspace
+python main.py
 
 # 单次任务
-python -m open_teams.main -m "帮我实现一个 REST API 服务" --project-root ./workspace
+python main.py -m "帮我实现一个 REST API 服务"
+```
+
+或使用安装后的 CLI：
+
+```bash
+open_Agent_Team
+```
+
+如果你想把结果写到指定项目目录，而不是自动创建 `workspace/proj_<timestamp>/`，可以显式传入：
+
+```bash
+python main.py --project-root ./my_project
+open_Agent_Team --project-root ./my_project
 ```
 
 ### 内置命令
@@ -161,10 +193,10 @@ python -m open_teams.main -m "帮我实现一个 REST API 服务" --project-root
 
 ## 运行时目录
 
-每次运行会在项目目录下生成 `.open_teams/`，这是调试的第一现场，也是系统的**真实状态来源（single source of truth）**：
+每次运行会在项目目录下生成 `.open_Agent_Team/`，这是调试的第一现场，也是系统的真实状态来源：
 
 ```
-.open_teams/
+.open_Agent_Team/
 ├── teams/{team_name}/config.json       # 团队信息
 ├── tasks/{team_name}/task_*.json       # 任务看板
 ├── inboxes/{team_name}/{agent}.json    # 邮箱
@@ -178,18 +210,20 @@ python -m open_teams.main -m "帮我实现一个 REST API 服务" --project-root
 ## 仓库结构
 
 ```
-open_teams/
+open_Agent_Team/
 ├── agents/          # team-lead 与 worker 生命周期管理
 ├── coordination/    # task board / mailbox / team metadata
 ├── prompts/         # leader / teammate prompt 组装
 ├── runtime/         # query engine / context / llm client
 ├── tools/           # 文件、搜索、shell、git、任务、通信、spawn
+├── team_logging/    # JSONL 活动日志
 ├── utils/           # 文件锁、安全与辅助逻辑
-├── logging/         # JSONL 活动日志
-├── doc/             # 架构说明
+├── docs/            # 架构说明
+├── workspace/       # 默认运行输出容器
 ├── AGENT.md         # 面向开发者的源码导览
 ├── config.py        # 全局配置
 ├── main.py          # CLI 入口
+├── requirements.txt # 运行依赖
 └── setup.py
 ```
 
@@ -198,6 +232,5 @@ open_teams/
 ## 文档
 
 * [AGENT.md](AGENT.md) - 面向开发者以及vibecoding初始化的源码导览
-* [Agent_teams_introduction.md](docs\Agent_teams_introduction.md) — Agent-teams 架构设计介绍
 
 ---

@@ -21,7 +21,7 @@ class QueryEngine:
     """Drives the LLM API call loop for a single :class:`RuntimeContext`.
 
     Supports both Anthropic and OpenAI-compatible providers through the
-    :class:`~open_teams.runtime.llm_client.LLMClient` abstraction.
+    :class:`~runtime.llm_client.LLMClient` abstraction.
 
     Parameters
     ----------
@@ -30,7 +30,7 @@ class QueryEngine:
     logger:
         Optional standard-library logger for debug output.
     activity_logger:
-        Optional :class:`~open_teams.logging.ActivityLogger` for structured
+        Optional :class:`~team_logging.ActivityLogger` for structured
         activity logging (tool calls, errors, etc.).
     llm_client:
         Pre-built LLM client.  When *None* one is created automatically from
@@ -224,7 +224,7 @@ class QueryEngine:
 
         while not ctx.abort_event.is_set():
             try:
-                from open_teams.coordination.mailbox import Mailbox
+                from coordination.mailbox import Mailbox
 
                 mailbox = Mailbox(ctx.config, team_name)
                 messages = mailbox.read_inbox(agent_name, unread_only=True)
@@ -278,7 +278,7 @@ class QueryEngine:
         if not team_name:
             return []
         try:
-            from open_teams.coordination.mailbox import Mailbox
+            from coordination.mailbox import Mailbox
 
             mailbox = Mailbox(self.context.config, team_name)
             return mailbox.read_inbox(agent_name, unread_only=True)
@@ -310,7 +310,7 @@ class QueryEngine:
         if not team_name or not message_ids:
             return
         try:
-            from open_teams.coordination.mailbox import Mailbox
+            from coordination.mailbox import Mailbox
 
             mailbox = Mailbox(self.context.config, team_name)
             mailbox.mark_as_read(agent_name, message_ids)
@@ -566,6 +566,14 @@ class QueryEngine:
 
                 if delivered_inbox_messages:
                     self._mark_inbox_messages_read(delivered_inbox_messages)
+                if injected_inbox_content:
+                    # Inbox delivery is a per-turn runtime signal, not durable user intent.
+                    # Remove it after the model has consumed it so old [INBOX] content
+                    # does not linger in history and get mistaken for fresh messages.
+                    self._rollback_inbox_injection(
+                        injected_inbox_content,
+                        inbox_injection_mode,
+                    )
 
                 if self._early_exit_requested:
                     early_exit_message = self._consume_early_exit()
@@ -626,8 +634,8 @@ class QueryEngine:
             return
 
         try:
-            from open_teams.coordination.task_board import TaskBoard
-            from open_teams.coordination.mailbox import Mailbox
+            from coordination.task_board import TaskBoard
+            from coordination.mailbox import Mailbox
 
             board = TaskBoard(ctx.config, team_name)
             stuck_tasks = board.list_tasks(

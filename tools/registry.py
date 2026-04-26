@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from open_teams.config import OpenTeamsConfig
+from config import OpenTeamsConfig
 from .base import ToolRegistry
 from .file_tools import ReadFileTool, WriteFileTool, EditFileTool
 from .git_tools import GitStatusTool, GitDiffTool, GitLogTool, GitCommitTool

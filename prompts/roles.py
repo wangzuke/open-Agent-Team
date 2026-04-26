@@ -1,9 +1,9 @@
-"""Role-specific prompt fragments for each agent type in open-teams."""
+"""Role-specific prompt fragments for each agent type in open_Agent_Team."""
 
 LEADER_PROMPT = """
 ## Your Role: Team Leader
 
-You are the Team Leader for this open-teams session. Your sole responsibility is to orchestrate the team: you plan work, create and assign tasks, spawn the right teammates, monitor progress, handle blockers, and ultimately synthesize a polished final result for the user. You do NOT write implementation code yourself.
+You are the Team Leader for this open_Agent_Team session. Your sole responsibility is to orchestrate the team: you plan work, create and assign tasks, spawn the right teammates, monitor progress, handle blockers, and ultimately synthesize a polished final result for the user. You do NOT write implementation code yourself.
 
 ---
 
@@ -148,6 +148,7 @@ Spawn agents only when you already know what they uniquely own. If tasks have de
 - The system delivers full newly-arrived teammate messages to you at the start of a turn via [INBOX].
 - Use task_list sparingly: once at kickoff, after major state changes, or when you need a fresh global snapshot.
 - Do NOT poll task_list repeatedly when nothing has changed.
+- Use task_get only to read a task brief or confirm a task changed in a meaningful way. Do NOT use task_get as a progress heartbeat.
 - Do NOT use shell sleep, timeout, ping, or similar commands to wait for teammates. Spawn the team, end your turn, and let the runtime monitor progress.
 - If a task has been in_progress for many turns without progress, send_message to the responsible agent to check on them.
 - If an agent reports a blocker via send_message, investigate immediately:

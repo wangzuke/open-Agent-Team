@@ -1,4 +1,4 @@
-"""Global configuration for open-teams."""
+"""Global configuration for open_Agent_Team."""
 
 from __future__ import annotations
 
@@ -10,7 +10,11 @@ from pathlib import Path
 from typing import Any
 
 
-CONFIG_FILE_NAME = "open_teams.json"
+CONFIG_FILE_NAME = "open_Agent_Team.json"
+LEGACY_CONFIG_FILE_NAMES = (
+    CONFIG_FILE_NAME,
+    "open_teams.json",
+)
 PACKAGE_DIR = Path(__file__).resolve().parent
 DEFAULT_WORKSPACE_BASE = PACKAGE_DIR / "workspace"
 
@@ -53,7 +57,7 @@ class OpenTeamsConfig:
     def __post_init__(self):
         self.project_root = Path(self.project_root).resolve()
         if self.workspace_dir is None:
-            self.workspace_dir = self.project_root / ".open_teams"
+            self.workspace_dir = self.project_root / ".open_Agent_Team"
         else:
             self.workspace_dir = Path(self.workspace_dir).resolve()
         if self.teams_dir is None:
@@ -214,8 +218,8 @@ def load_and_init_config(
     Parameters
     ----------
     config_file:
-        Path to a JSON config file. If None, tries ``open_teams/open_teams.json``
-        in the package directory.
+        Path to a JSON config file. If None, tries known config filenames in the
+        package directory.
     cli_overrides:
         Dict of values from command-line flags (None values are ignored).
     """
@@ -226,7 +230,14 @@ def load_and_init_config(
     if config_file:
         cfg_path = Path(config_file)
     else:
-        cfg_path = PACKAGE_DIR / CONFIG_FILE_NAME
+        cfg_path = next(
+            (
+                PACKAGE_DIR / candidate
+                for candidate in LEGACY_CONFIG_FILE_NAMES
+                if (PACKAGE_DIR / candidate).exists()
+            ),
+            PACKAGE_DIR / CONFIG_FILE_NAME,
+        )
 
     if cfg_path.exists():
         config = OpenTeamsConfig.load_from_file(cfg_path)
@@ -258,13 +269,13 @@ def load_and_init_config(
     # 4. CLI project_root overrides imply runtime metadata should stay inside
     # the chosen project directory.
     if project_root_overridden:
-        config.workspace_dir = config.project_root / ".open_teams"
+        config.workspace_dir = config.project_root / ".open_Agent_Team"
 
     # 5. Treat the workspace base directory as a project container.
     workspace_base = DEFAULT_WORKSPACE_BASE.resolve()
     if config.project_root == workspace_base:
         config.project_root = build_project_root(workspace_base)
-        config.workspace_dir = config.project_root / ".open_teams"
+        config.workspace_dir = config.project_root / ".open_Agent_Team"
 
     # 6. Set subdirectories directly under workspace_dir
     config.teams_dir = config.workspace_dir / "teams"

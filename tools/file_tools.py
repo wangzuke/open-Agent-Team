@@ -5,8 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Optional
 
-from open_teams.config import OpenTeamsConfig
-from open_teams.utils.security import SandboxViolation, validate_file_path
+from config import OpenTeamsConfig
+from utils.security import SandboxViolation, validate_file_path
 
 from .base import Tool
 

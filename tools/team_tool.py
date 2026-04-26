@@ -7,8 +7,8 @@ from typing import Any, Optional, TYPE_CHECKING
 from .base import Tool
 
 if TYPE_CHECKING:
-    from open_teams.config import OpenTeamsConfig
-    from open_teams.coordination.team import TeamManager
+    from config import OpenTeamsConfig
+    from coordination.team import TeamManager
 
 
 class TeamCreateTool(Tool):
@@ -46,7 +46,7 @@ class TeamCreateTool(Tool):
                 raise RuntimeError(
                     "TeamCreateTool: set_context() must be called before execute()."
                 )
-            from open_teams.coordination.team import TeamManager
+            from coordination.team import TeamManager
             self._manager = TeamManager(self._config)
         return self._manager
 
@@ -59,7 +59,7 @@ class TeamCreateTool(Tool):
             # Create the team with a placeholder leader so the schema is valid.
             # The actual leader is typically registered separately when the team
             # is bootstrapped; here we use sensible defaults.
-            from open_teams.utils.helpers import generate_id
+            from utils.helpers import generate_id
             leader_id = generate_id("agent_")
             team = manager.create_team(
                 team_name=team_name,

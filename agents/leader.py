@@ -7,17 +7,17 @@ import time
 from pathlib import Path
 from typing import Any
 
-from open_teams.config import OpenTeamsConfig
-from open_teams.runtime.models import AgentIdentity
-from open_teams.runtime.context import RuntimeContext
-from open_teams.runtime.engine import QueryEngine
-from open_teams.agents.definition import AgentDefinition
-from open_teams.agents.manager import AgentManager
-from open_teams.coordination import TaskBoard, Mailbox, TeamManager
-from open_teams.tools import create_leader_tools
-from open_teams.prompts import SystemPromptBuilder
-from open_teams.logging import ActivityLogger
-from open_teams.utils.helpers import generate_id
+from config import OpenTeamsConfig
+from runtime.models import AgentIdentity
+from runtime.context import RuntimeContext
+from runtime.engine import QueryEngine
+from agents.definition import AgentDefinition
+from agents.manager import AgentManager
+from coordination import TaskBoard, Mailbox, TeamManager
+from tools import create_leader_tools
+from prompts import SystemPromptBuilder
+from team_logging import ActivityLogger
+from utils.helpers import generate_id
 
 
 class TeamLeader:
@@ -95,7 +95,7 @@ class TeamLeader:
         if not existing:
             self.team_manager.create_team(
                 team_name=self.team_name,
-                description="open-teams coding team",
+                description="open_Agent_Team coding team",
                 leader_name=self.agent_name,
                 leader_id=generate_id("leader-"),
                 leader_model=self.model,

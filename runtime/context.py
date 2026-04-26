@@ -8,7 +8,7 @@ import threading
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
-from ..config import OpenTeamsConfig
+from config import OpenTeamsConfig
 from .models import AgentIdentity
 from .token_tracker import TokenTracker
 
@@ -46,7 +46,7 @@ class RuntimeContext:
     model:
         Model ID string (e.g. ``"claude-sonnet-4-6"``).
     config:
-        Shared :class:`~open_teams.config.OpenTeamsConfig` instance.
+        Shared :class:`~config.OpenTeamsConfig` instance.
     working_dir:
         Filesystem working directory for the agent.
     abort_event:

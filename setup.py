@@ -1,12 +1,13 @@
-"""open-teams: A multi-agent collaborative coding system."""
+"""open_Agent_Team: A multi-agent collaborative coding system."""
 
 from setuptools import setup, find_packages
 
 setup(
-    name="open-teams",
+    name="open_Agent_Team",
     version="0.1.0",
     description="Multi-agent collaborative coding system",
     packages=find_packages(),
+    py_modules=["main", "config"],
     python_requires=">=3.10",
     install_requires=[
         "anthropic>=0.40.0",
@@ -15,7 +16,7 @@ setup(
     ],
     entry_points={
         "console_scripts": [
-            "open-teams=open_teams.main:main",
+            "open_Agent_Team=main:main",
         ],
     },
 )
