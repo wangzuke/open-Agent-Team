@@ -199,13 +199,9 @@ open_Agent_Team --help
 ### 配置
 
 ```bash
-python main.py --init-config
-```
+python main.py --init-config #创建配置文件
 
-也可以使用：
-
-```bash
-python -m main --init-config
+# 或者 python -m main --init-config
 ```
 
 编辑生成的 `open_Agent_Team.json`：
@@ -214,10 +210,10 @@ python -m main --init-config
 {
   "provider": "anthropic",
   "api_key": "your-api-key",
-  "base_url": null,
-  "leader_model": "claude-opus-4-6",
-  "default_model": "claude-sonnet-4-6",
-  "team_name": "default",
+  "base_url": "your_base_url",
+  "leader_model": "choose_your_model_for_leader",
+  "default_model": "choose_your_model_for_team",
+  "team_name": "set_your_team_name",
   "project_root": "workspace"
 }
 ```
@@ -225,7 +221,6 @@ python -m main --init-config
 说明：
 
 - 默认配置文件名是 `open_Agent_Team.json`
-- 当前版本仍兼容读取旧文件名 `open_teams.json`
 - 如果 `project_root` 保持为默认的 `workspace`，运行时会自动创建 `workspace/proj_<timestamp>/`
 
 ### 启动
@@ -233,15 +228,12 @@ python -m main --init-config
 ```bash
 # 交互模式
 python main.py
-
-# 单次任务
-python main.py -m "帮我实现一个 REST API 服务"
 ```
-
-或使用安装后的 CLI：
+you> 输入你的prompt
 
 ```bash
-open_Agent_Team
+# 单次任务
+python main.py -m "帮我实现一个 REST API 服务"
 ```
 
 如果你想把结果写到指定项目目录，而不是自动创建 `workspace/proj_<timestamp>/`，可以显式传入：
